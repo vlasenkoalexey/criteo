@@ -22,7 +22,10 @@ echo "Submitting an AI Platform job..."
 
 TIER="BASIC" # BASIC | BASIC_GPU | STANDARD_1 | PREMIUM_1
 
-export MODEL_NAME="quickstart" # change to your model name
+export BUCKET_NAME="alekseyv-scalableai-dev-criteo-model-bucket"
+export REGION="us-central1"
+export MODEL_NAME="criteo_kaggle1" # change to your model name
+export PYTHON_VERSION="3.7"
 
 PACKAGE_PATH=./trainer # this can be a gcs location to a zipped and uploaded package
 export MODEL_DIR=gs://${BUCKET_NAME}/${MODEL_NAME}/model
@@ -37,15 +40,15 @@ gcloud ai-platform jobs submit training ${JOB_NAME} \
         --runtime-version=${RUNTIME_VERSION} \
         --region=${REGION} \
         --scale-tier=${TIER} \
-        --module-name=trainer.task \
+        --module-name=trainer.trainer \
         --package-path=${PACKAGE_PATH}  \
-        --python-version=${PYTHON_VERSION} \
         --stream-logs \
         -- \
 	    ${MODEL_DIR}
 
 set -
 
+#--python-version=${PYTHON_VERSION} \
 # Notes:
 # use --packages instead of --package-path if gcs location
 # add --reuse-job-dir to resume training

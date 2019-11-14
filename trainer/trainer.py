@@ -309,7 +309,8 @@ def main(argv):
 
 if __name__ == '__main__':
   print(os.environ)
-  os.environ.pop('TF_CONFIG')
-  print(os.environ)
+  # if (os.environ['CLOUDSDK_METRICS_COMMAND_NAME'] == 'gcloud.ai-platform.local.train'):
+  #   print('removing TF_CONFIG')
+  #   os.environ.pop('TF_CONFIG')
   app.run(main)
 

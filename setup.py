@@ -18,9 +18,11 @@ from setuptools import find_packages
 from setuptools import setup
 
 REQUIRED_PACKAGES = [
-    'tensorflow==1.13.1',
+    'tensorflow==2.0.0',
     'scikit-learn>=0.20.2',
-    'google-api-python-client',
+    'tensorflow-io==0.9.0',
+    'google-cloud-bigquery-storage',
+    'google-cloud-bigquery'
 ]
 
 setup(
@@ -29,5 +31,5 @@ setup(
     install_requires=REQUIRED_PACKAGES,
     packages=find_packages(),
     include_package_data=True,
-    description='AI Platform | Quick Start'
+    description='Criteo dataset trainer'
 )
