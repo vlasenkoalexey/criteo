@@ -19,6 +19,8 @@ set -v
 
 echo "Training local ML model"
 
+export GOOGLE_APPLICATION_CREDENTIALS="${PWD}/alekseyv-scalableai-dev-077efe757ef6.json"
+
 MODEL_NAME="criteo_kaggle1" # Change to your model name, e.g. "estimator"
 
 PACKAGE_PATH=./trainer
@@ -26,6 +28,7 @@ MODEL_DIR=./trained/${MODEL_NAME}
 mkdir -p ${MODEL_DIR}
 
 gcloud ai-platform local train \
+        --job-dir=${MODEL_DIR} \
         --module-name=trainer.trainer \
         --package-path=${PACKAGE_PATH} \
         -- \

@@ -1,3 +1,7 @@
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
 from absl import app
 from absl import flags
 
@@ -27,9 +31,12 @@ from tensorflow_io.bigquery import BigQueryClient
 from tensorflow_io.bigquery import BigQueryReadSession
 from tensorflow.python.client import device_lib
 
+FLAGS = flags.FLAGS
+flags.DEFINE_string("job-dir", "", "Job directory")
 
 LOCATION = 'us'
 PROJECT_ID = "alekseyv-scalableai-dev"
+GOOGLE_APPLICATION_CREDENTIALS = "alekseyv-scalableai-dev-077efe757ef6.json"
 
 # # Download options.
 # DATA_URL = 'gs://alekseyv-scalableai-dev-public-bucket/criteo_kaggle.tar.gz'
@@ -41,19 +48,19 @@ BATCH_SIZE = 256
 CSV_SCHEMA = [
       bigquery.SchemaField("label", "INTEGER", mode='REQUIRED'),
       # using strings because of https://github.com/tensorflow/io/issues/619
-      bigquery.SchemaField("int1", "STRING"),
-      bigquery.SchemaField("int2", "STRING"),
-      bigquery.SchemaField("int3", "STRING"),
-      bigquery.SchemaField("int4", "STRING"),
-      bigquery.SchemaField("int5", "STRING"),
-      bigquery.SchemaField("int6", "STRING"),
-      bigquery.SchemaField("int7", "STRING"),
-      bigquery.SchemaField("int8", "STRING"),
-      bigquery.SchemaField("int9", "STRING"),
-      bigquery.SchemaField("int10", "STRING"),
-      bigquery.SchemaField("int11", "STRING"),
-      bigquery.SchemaField("int12", "STRING"),
-      bigquery.SchemaField("int13", "STRING"),
+      bigquery.SchemaField("int1", "INTEGER"),
+      bigquery.SchemaField("int2", "INTEGER"),
+      bigquery.SchemaField("int3", "INTEGER"),
+      bigquery.SchemaField("int4", "INTEGER"),
+      bigquery.SchemaField("int5", "INTEGER"),
+      bigquery.SchemaField("int6", "INTEGER"),
+      bigquery.SchemaField("int7", "INTEGER"),
+      bigquery.SchemaField("int8", "INTEGER"),
+      bigquery.SchemaField("int9", "INTEGER"),
+      bigquery.SchemaField("int10", "INTEGER"),
+      bigquery.SchemaField("int11", "INTEGER"),
+      bigquery.SchemaField("int12", "INTEGER"),
+      bigquery.SchemaField("int13", "INTEGER"),
       bigquery.SchemaField("cat1", "STRING"),
       bigquery.SchemaField("cat2", "STRING"),
       bigquery.SchemaField("cat3", "STRING"),
@@ -144,6 +151,10 @@ def get_mean_and_std_dicts():
   )  # API request - starts the query
 
   df = query_job.to_dataframe()
+  #print(query_job.result())
+  #print(query_job.errors)
+  #print(df)
+
   mean_dict = dict((field[0].replace('avg_', ''), df[field[0]][0]) for field in df.items() if field[0].startswith('avg'))
   std_dict = dict((field[0].replace('std_', ''), df[field[0]][0]) for field in df.items() if field[0].startswith('std'))
   return (mean_dict, std_dict)
@@ -154,12 +165,11 @@ def transofrom_row(row_dict, mean_dict, std_dict):
   label = dict_without_label.pop('label')
   for field in CSV_SCHEMA:
     if (field.name.startswith('int')):
-        if dict_without_label[field.name] != '':
+        if dict_without_label[field.name] == 0:
             value = float(dict_without_label[field.name])
             dict_without_label[field.name] = (value - mean_dict[field.name]) / std_dict[field.name]
         else:
             dict_without_label[field.name] = 0.0 # don't use normalized 0 value for nulls
-  #tf.print(dict_without_label)
   return (dict_without_label, label)
 
 def read_bigquery(dataset_id, table_name):
@@ -217,7 +227,11 @@ def get_vocabulary_size_dict():
   )  # API request - starts the query
 
   df = query_job.to_dataframe()
+  #print(query_job.result())
+  #print(query_job.errors)
+  #print(df)
   dictionary = dict((field[0], df[field[0]][0]) for field in df.items())
+  #print(dir(df))
   return dictionary
 
 def create_categorical_feature_column(categorical_vocabulary_size_dict, key):
@@ -258,59 +272,84 @@ def main(argv):
     print("reading categorical_vocabulary_size_dict")
     categorical_vocabulary_size_dict = get_vocabulary_size_dict()
 
-    feature_columns = create_feature_columns(categorical_vocabulary_size_dict)
-    print("categorical_vocabulary_size_dict: " + str(categorical_vocabulary_size_dict))
-    feature_layer = tf.keras.layers.DenseFeatures(feature_columns)
-    Dense = tf.keras.layers.Dense
-    model = tf.keras.Sequential(
-    [
-        feature_layer,
-        Dense(2560, activation=tf.nn.relu),
-        Dense(1024, activation=tf.nn.relu),
-        Dense(256, activation=tf.nn.relu),
-        Dense(1, activation=tf.nn.sigmoid)
-    ])
+    #strategy = tf.distribute.MirroredStrategy()
+    strategy = tf.distribute.OneDeviceStrategy(device="/cpu:0")
+    with strategy.scope():
+      feature_columns = create_feature_columns(categorical_vocabulary_size_dict)
+      print("categorical_vocabulary_size_dict: " + str(categorical_vocabulary_size_dict))
+      feature_layer = tf.keras.layers.DenseFeatures(feature_columns)
+      Dense = tf.keras.layers.Dense
+      model = tf.keras.Sequential(
+      [
+          feature_layer,
+          Dense(2560, activation=tf.nn.relu),
+          Dense(1024, activation=tf.nn.relu),
+          Dense(256, activation=tf.nn.relu),
+          Dense(1, activation=tf.nn.sigmoid)
+      ])
 
-    # Compile Keras model
-    model.compile(
-        optimizer=tf.optimizers.Adagrad(learning_rate=0.05),
-        loss=tf.keras.losses.BinaryCrossentropy(),
-        metrics=['accuracy'])
+      # Compile Keras model
+      model.compile(
+          optimizer=tf.optimizers.Adagrad(learning_rate=0.05),
+          loss=tf.keras.losses.BinaryCrossentropy())
+          # ,
+          # metrics=['accuracy'])
 
-    training_ds = read_bigquery('criteo_kaggle','days_strings').take(1000000).shuffle(10000).batch(BATCH_SIZE).prefetch(100)
-    #training_ds = read_bigquery('criteo_kaggle','days').skip(100000).take(5000000).shuffle(10000).batch(BATCH_SIZE)
-    #training_ds = read_bigquery('criteo_kaggle','days_strings').shuffle(10000).batch(BATCH_SIZE)
-    print('checking dataset')
-    # row_index = 0
-    # for row in training_ds.take(2):
-    #     print(">>>>>> row %d: %s" % (row_index, row))
-    #     row_index += 1
+      #training_ds = read_bigquery('criteo_kaggle','days_strings').take(1000000).shuffle(10000).batch(BATCH_SIZE).prefetch(100)
+      training_ds = read_bigquery('criteo_kaggle','days').skip(100000).take(500000).shuffle(10000).batch(BATCH_SIZE)
+      #training_ds = read_bigquery('criteo_kaggle','days_strings').shuffle(10000).batch(BATCH_SIZE)
+      print('checking dataset')
+      # row_index = 0
+      # for row in training_ds.take(2):
+      #     print(">>>>>> row %d: %s" % (row_index, row))
+      #     row_index += 1
 
-    if not os.path.exists(model_dir + "/checkpoints"):
-        os.makedirs(model_dir + "/checkpoints")
+      if not os.path.exists(model_dir + "/checkpoints"):
+          os.makedirs(model_dir + "/checkpoints")
 
-    log_dir= model_dir + "/logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    #tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=0, embeddings_freq=0)
-    tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, embeddings_freq=1, profile_batch=0)
+      log_dir= model_dir + "/logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+      #tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=0, embeddings_freq=0)
+      tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, embeddings_freq=1, profile_batch=0)
 
-    filepath= model_dir + "/checkpoints/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
-    checkpoint = ModelCheckpoint(filepath, monitor='accuracy', verbose=1, mode='max')
+      #filepath= model_dir + "/checkpoints/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
+      #checkpoint = ModelCheckpoint(filepath, monitor='accuracy', verbose=1, mode='max')
+      filepath= model_dir + "/checkpoints/epochs:{epoch:03d}.hdf5"
+      checkpoint = ModelCheckpoint(filepath, verbose=1, mode='max')
 
-    model.fit(training_ds, epochs=5,
-    callbacks=[tensorboard_callback, checkpoint]
-    )
+      model.fit(training_ds, epochs=5,
+      callbacks=[tensorboard_callback, checkpoint]
+      )
     #, callbacks=[tensorboard_callback, checkpoint]
     print('evaluating model')
 
-    eval_ds = read_bigquery('criteo_kaggle','days_strings').skip(10000000).take(5 * BATCH_SIZE).batch(BATCH_SIZE)
+    eval_ds = read_bigquery('criteo_kaggle','days').skip(1000000).take(5 * BATCH_SIZE).batch(BATCH_SIZE)
     loss, accuracy = model.evaluate(eval_ds)
     print("Eval - Loss: {}, Accuracy: {}".format(loss, accuracy))
 
 
 if __name__ == '__main__':
+  print('executable')
+  print(sys.executable)
+  print(sys.version)
+  print(sys.version_info)
+
+  #print('pip')
+  #print(os.system('pip --version'))
+  #print(os.system('pip list'))
+
+  os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = GOOGLE_APPLICATION_CREDENTIALS
+  os.environ['PROJECT_ID'] = PROJECT_ID
+  print(os.system('pwd'))
+  print(os.system('ls -al'))
+  if (os.environ.get('CLOUDSDK_METRICS_COMMAND_NAME') == 'gcloud.ai-platform.local.train'):
+    print('training locally')
+    print('removing TF_CONFIG')
+    os.environ.pop('TF_CONFIG')
+  else:
+    print('training in cloud')
+    os.system('gsutil cp gs://alekseyv-scalableai-dev-private-bucket/criteo/alekseyv-scalableai-dev-077efe757ef6.json .')
+    os.environ[ "GOOGLE_APPLICATION_CREDENTIALS"] = os.getcwd() + '/' + GOOGLE_APPLICATION_CREDENTIALS
   print(os.environ)
-  # if (os.environ['CLOUDSDK_METRICS_COMMAND_NAME'] == 'gcloud.ai-platform.local.train'):
-  #   print('removing TF_CONFIG')
-  #   os.environ.pop('TF_CONFIG')
+  print(os.system('cat ${GOOGLE_APPLICATION_CREDENTIALS}'))
   app.run(main)
 

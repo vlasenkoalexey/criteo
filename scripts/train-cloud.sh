@@ -32,6 +32,8 @@ export MODEL_DIR=gs://${BUCKET_NAME}/${MODEL_NAME}/model
 
 gsutil mb gs://${BUCKET_NAME}
 
+gsutil cp alekseyv-scalableai-dev-077efe757ef6.json gs://alekseyv-scalableai-dev-private-bucket/criteo
+
 CURRENT_DATE=`date +%Y%m%d_%H%M%S`
 JOB_NAME=train_${MODEL_NAME}_${CURRENT_DATE}
 

@@ -17,12 +17,15 @@
 from setuptools import find_packages
 from setuptools import setup
 
+# Note: it is important to specify pandas version, otherwise pandas0.17.1 is installed by default
+#    'pandas==0.24.2',
+
 REQUIRED_PACKAGES = [
+    'pandas==0.24.2',
     'tensorflow==2.0.0',
-    'scikit-learn>=0.20.2',
-    'tensorflow-io==0.9.0',
-    'google-cloud-bigquery-storage',
-    'google-cloud-bigquery'
+    'tensorflow-io==0.9.1',
+    'google-cloud-bigquery',
+    'google-cloud-bigquery-storage'
 ]
 
 setup(
@@ -31,5 +34,9 @@ setup(
     install_requires=REQUIRED_PACKAGES,
     packages=find_packages(),
     include_package_data=True,
-    description='Criteo dataset trainer'
+    description='Criteo dataset trainer',
+    # package_data = {
+    #     # If any package contains *.txt or *.rst files, include them:
+    #     '': ['*.json'],
+    # },
 )
