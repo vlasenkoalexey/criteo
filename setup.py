@@ -19,11 +19,12 @@ from setuptools import setup
 
 # Note: it is important to specify pandas version, otherwise pandas0.17.1 is installed by default
 #    'pandas==0.24.2',
+#  --no-deps is required for tensorflow-io because of https://github.com/tensorflow/io/issues/124
 
 REQUIRED_PACKAGES = [
     'pandas==0.24.2',
-    'tensorflow==2.0.0',
     'tensorflow-io==0.9.1',
+    'tensorflow-gpu==2.0.0',
     'google-cloud-bigquery',
     'google-cloud-bigquery-storage'
 ]

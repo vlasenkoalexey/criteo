@@ -272,8 +272,8 @@ def main(argv):
     print("reading categorical_vocabulary_size_dict")
     categorical_vocabulary_size_dict = get_vocabulary_size_dict()
 
-    #strategy = tf.distribute.MirroredStrategy()
-    strategy = tf.distribute.OneDeviceStrategy(device="/cpu:0")
+    strategy = tf.distribute.MirroredStrategy()
+    #strategy = tf.distribute.OneDeviceStrategy(device="/cpu:0")
     with strategy.scope():
       feature_columns = create_feature_columns(categorical_vocabulary_size_dict)
       print("categorical_vocabulary_size_dict: " + str(categorical_vocabulary_size_dict))
@@ -290,14 +290,15 @@ def main(argv):
 
       # Compile Keras model
       model.compile(
-          optimizer=tf.optimizers.Adagrad(learning_rate=0.05),
-          loss=tf.keras.losses.BinaryCrossentropy())
-          # ,
-          # metrics=['accuracy'])
+          # cannot use Adagrad with mirroredstartegy https://github.com/tensorflow/tensorflow/issues/19551
+          #optimizer=tf.optimizers.Adagrad(learning_rate=0.05), 
+          optimizer=tf.optimizers.SGD(learning_rate=0.05),
+          loss=tf.keras.losses.BinaryCrossentropy(),
+          metrics=['accuracy'])
 
       #training_ds = read_bigquery('criteo_kaggle','days_strings').take(1000000).shuffle(10000).batch(BATCH_SIZE).prefetch(100)
-      training_ds = read_bigquery('criteo_kaggle','days').skip(100000).take(500000).shuffle(10000).batch(BATCH_SIZE)
-      #training_ds = read_bigquery('criteo_kaggle','days_strings').shuffle(10000).batch(BATCH_SIZE)
+      #training_ds = read_bigquery('criteo_kaggle','days').skip(100000).take(50000).shuffle(10000).batch(BATCH_SIZE)
+      training_ds = read_bigquery('criteo_kaggle','days').take(1000000).shuffle(10000).batch(BATCH_SIZE)
       print('checking dataset')
       # row_index = 0
       # for row in training_ds.take(2):
@@ -316,13 +317,18 @@ def main(argv):
       filepath= model_dir + "/checkpoints/epochs:{epoch:03d}.hdf5"
       checkpoint = ModelCheckpoint(filepath, verbose=1, mode='max')
 
-      model.fit(training_ds, epochs=5,
+      model.fit(training_ds, epochs=5, verbose=2,
       callbacks=[tensorboard_callback, checkpoint]
       )
     #, callbacks=[tensorboard_callback, checkpoint]
     print('evaluating model')
 
-    eval_ds = read_bigquery('criteo_kaggle','days').skip(1000000).take(5 * BATCH_SIZE).batch(BATCH_SIZE)
+    eval_ds = read_bigquery('criteo_kaggle','days').skip(100000).take(50 * BATCH_SIZE).batch(BATCH_SIZE)
+    # row_index = 0
+    # for row in eval_ds.take(2):
+    #     print(">>>>>> row %d: %s" % (row_index, row))
+    #     row_index += 1
+
     loss, accuracy = model.evaluate(eval_ds)
     print("Eval - Loss: {}, Accuracy: {}".format(loss, accuracy))
 
