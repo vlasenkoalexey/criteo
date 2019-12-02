@@ -17,41 +17,47 @@
 
 set -v
 
+gcloud config configurations activate alekseyv-scalableai-dev
+
+echo "Rebuilding docker image..."
+export PROJECT_ID=alekseyv-scalableai-dev
+export IMAGE_REPO_NAME=alekseyv_criteo_custom_container
+export IMAGE_TAG=v1
+export IMAGE_URI=gcr.io/$PROJECT_ID/$IMAGE_REPO_NAME:$IMAGE_TAG
+docker build -f Dockerfile -t $IMAGE_URI ./
+docker push $IMAGE_URI
+
 # This is the common setup.
 echo "Submitting an AI Platform job..."
 
-TIER="CUSTOM" # BASIC | BASIC_GPU | STANDARD_1 | PREMIUM_1
+TIER="BASIC" # BASIC | BASIC_GPU | STANDARD_1 | PREMIUM_1
 
 export BUCKET_NAME="alekseyv-scalableai-dev-criteo-model-bucket"
 export REGION="us-central1"
-export MODEL_NAME="criteo_kaggle1" # change to your model name
-export PYTHON_VERSION="3.7"
-export RUNTIME_VERSION="1.14"
+export MODEL_NAME="criteo_kaggle_docker" # change to your model name
 
 PACKAGE_PATH=./trainer # this can be a gcs location to a zipped and uploaded package
 export MODEL_DIR=gs://${BUCKET_NAME}/${MODEL_NAME}/model
 
 gsutil mb gs://${BUCKET_NAME}
 
-gsutil cp alekseyv-scalableai-dev-077efe757ef6.json gs://alekseyv-scalableai-dev-private-bucket/criteo
+#gsutil cp alekseyv-scalableai-dev-077efe757ef6.json gs://alekseyv-scalableai-dev-private-bucket/criteo
 
 CURRENT_DATE=`date +%Y%m%d_%H%M%S`
 JOB_NAME=train_${MODEL_NAME}_${CURRENT_DATE}
+IMAGE_URI=gcr.io/alekseyv-scalableai-dev/alekseyv_criteo_custom_container:v1
 
 gcloud ai-platform jobs submit training ${JOB_NAME} \
         --config=${PWD}/scripts/config_fix.yaml \
-        --job-dir=${MODEL_DIR} \
-        --runtime-version=${RUNTIME_VERSION} \
         --region=${REGION} \
-        --module-name=trainer.trainer \
-        --package-path=${PACKAGE_PATH}  \
+        --master-image-uri ${IMAGE_URI} \
+        --worker-image-uri ${IMAGE_URI} \
         --stream-logs \
-        -- \
-	    ${MODEL_DIR}
+        -- python trainer/trainer.py ${MODEL_DIR}
+
 
 set -
 
-#        --scale-tier=${TIER} \
 #--python-version=${PYTHON_VERSION} \
 # Notes:
 # use --packages instead of --package-path if gcs location

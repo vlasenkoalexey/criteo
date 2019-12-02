@@ -20,11 +20,11 @@ set -v
 # This is the common setup.
 echo "Submitting an AI Platform job..."
 
-TIER="CUSTOM" # BASIC | BASIC_GPU | STANDARD_1 | PREMIUM_1
+TIER="STANDARD_1" # BASIC | BASIC_GPU | STANDARD_1 | PREMIUM_1
 
 export BUCKET_NAME="alekseyv-scalableai-dev-criteo-model-bucket"
 export REGION="us-central1"
-export MODEL_NAME="criteo_kaggle1" # change to your model name
+export MODEL_NAME="criteo_kaggle_gpu" # change to your model name
 export PYTHON_VERSION="3.7"
 export RUNTIME_VERSION="1.14"
 
@@ -40,18 +40,23 @@ JOB_NAME=train_${MODEL_NAME}_${CURRENT_DATE}
 
 gcloud ai-platform jobs submit training ${JOB_NAME} \
         --config=${PWD}/scripts/config_fix.yaml \
-        --job-dir=${MODEL_DIR} \
+        --package-path=${PACKAGE_PATH} \
         --runtime-version=${RUNTIME_VERSION} \
-        --region=${REGION} \
         --module-name=trainer.trainer \
-        --package-path=${PACKAGE_PATH}  \
+        --job-dir=${MODEL_DIR} \
+        --region=us-central1 \
+        --scale-tier=custom \
+        --master-machine-type=n1-highcpu-16 \
+        --worker-count=6 \
+        --worker-machine-type=n1-highcpu-16 \
         --stream-logs \
         -- \
 	    ${MODEL_DIR}
-
 set -
 
-#        --scale-tier=${TIER} \
+#         --parameter-server-count=3 \
+#        --parameter-server-machine-type=n1-highmem-8 \
+
 #--python-version=${PYTHON_VERSION} \
 # Notes:
 # use --packages instead of --package-path if gcs location

@@ -17,6 +17,14 @@
 
 set -v
 
+export PROJECT_ID=alekseyv-scalableai-dev
+export IMAGE_REPO_NAME=alekseyv_criteo_custom_container
+export IMAGE_TAG=v1
+export IMAGE_URI=gcr.io/$PROJECT_ID/$IMAGE_REPO_NAME:$IMAGE_TAG
+docker build -f Dockerfile -t $IMAGE_URI ./
+docker push $IMAGE_URI
+
+
 # This is the common setup.
 echo "Submitting an AI Platform job..."
 
@@ -26,6 +34,7 @@ export BUCKET_NAME="alekseyv-scalableai-dev-criteo-model-bucket"
 export REGION="us-central1"
 export MODEL_NAME="criteo_kaggle_gpu" # change to your model name
 export PYTHON_VERSION="3.7"
+export RUNTIME_VERSION="1.14"
 
 PACKAGE_PATH=./trainer # this can be a gcs location to a zipped and uploaded package
 export MODEL_DIR=gs://${BUCKET_NAME}/${MODEL_NAME}/model
@@ -39,6 +48,7 @@ JOB_NAME=train_${MODEL_NAME}_${CURRENT_DATE}
 
 gcloud ai-platform jobs submit training ${JOB_NAME} \
         --package-path=${PACKAGE_PATH} \
+        --runtime-version=${RUNTIME_VERSION} \
         --module-name=trainer.trainer \
         --job-dir=${MODEL_DIR} \
         --region=us-central1 \

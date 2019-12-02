@@ -18,6 +18,8 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 
+from enum import Enum
+
 import datetime
 from tensorflow import keras
 from tensorflow.keras.callbacks import *
@@ -31,6 +33,11 @@ from tensorflow_io.bigquery import BigQueryClient
 from tensorflow_io.bigquery import BigQueryReadSession
 from tensorflow.python.client import device_lib
 
+from tensorflow.python.data.experimental.ops import interleave_ops
+from tensorflow.python.data.ops import dataset_ops
+
+import google.cloud.logging
+
 FLAGS = flags.FLAGS
 flags.DEFINE_string("job-dir", "", "Job directory")
 
@@ -43,7 +50,9 @@ GOOGLE_APPLICATION_CREDENTIALS = "alekseyv-scalableai-dev-077efe757ef6.json"
 
 # DATASET_ID = 'criteo_kaggle'
 
-BATCH_SIZE = 256
+BATCH_SIZE = 128
+
+TARGET_TYPE = Enum('TARGET_TYPE', 'local cloud')
 
 CSV_SCHEMA = [
       bigquery.SchemaField("label", "INTEGER", mode='REQUIRED'),
@@ -88,42 +97,6 @@ CSV_SCHEMA = [
       bigquery.SchemaField("cat25", "STRING"),
       bigquery.SchemaField("cat26", "STRING")
   ]
-
-def create_bigquery_dataset_if_necessary(dataset_id):
-  # Construct a full Dataset object to send to the API.
-  client = bigquery.Client(project=PROJECT_ID)
-  dataset = bigquery.Dataset(bigquery.dataset.DatasetReference(PROJECT_ID, dataset_id))
-  dataset.location = LOCATION
-
-  try:
-    dataset = client.create_dataset(dataset)  # API request
-    return True
-  except GoogleAPIError as err:
-    if err.code != 409: # http_client.CONFLICT
-      raise
-  return False
-
-def load_data_into_bigquery(url, dataset_id, table_id):
-  create_bigquery_dataset_if_necessary(dataset_id)
-  client = bigquery.Client(project=PROJECT_ID)
-  dataset_ref = client.dataset(dataset_id)
-  table_ref = dataset_ref.table(table_id)
-  job_config = bigquery.LoadJobConfig()
-  job_config.write_disposition = bigquery.WriteDisposition.WRITE_TRUNCATE
-  job_config.source_format = bigquery.SourceFormat.CSV
-  #job_config.autodetect = True
-  job_config.schema = CSV_SCHEMA
-
-  load_job = client.load_table_from_uri(
-      url, table_ref, job_config=job_config
-  )
-  print("Starting job {}".format(load_job.job_id))
-
-  load_job.result()  # Waits for table load to complete.
-  print("Job finished.")
-
-  destination_table = client.get_table(table_ref)
-  print("Loaded {} rows.".format(destination_table.num_rows))
 
 def get_mean_and_std_dicts():
   #client = bigquery.Client(location="US", project=PROJECT_ID)
@@ -184,9 +157,30 @@ def read_bigquery(dataset_id, table_name):
            else dtypes.string for field in CSV_SCHEMA),
       requested_streams=10)
 
-  dataset = read_session.parallel_read_rows()
-  transformed_ds = dataset.map (lambda row: transofrom_row(row, mean_dict, std_dict))
-  return transformed_ds
+  #dataset = read_session.parallel_read_rows()
+
+  streams = read_session.get_streams()
+  tf.print('bq streams: !!!!!!!!!!!!!!!!!!!!!!')
+  tf.print(streams)
+  streams_count = 10 # len(streams)
+  #streams_count = read_session.get_streams().shape
+  tf.print('big query read session returned {} streams'.format(streams_count))
+
+  streams_ds = dataset_ops.Dataset.from_tensor_slices(streams).shuffle(buffer_size=streams_count)
+  dataset = streams_ds.interleave(
+            read_session.read_rows,
+            cycle_length=streams_count,
+            num_parallel_calls=streams_count)
+  transformed_ds = dataset.map (lambda row: transofrom_row(row, mean_dict, std_dict), num_parallel_calls=streams_count).prefetch(10000)
+
+  # Interleave dataset is not shardable, turning off sharding
+  # See https://www.tensorflow.org/tutorials/distribute/multi_worker_with_keras#dataset_sharding_and_batch_size
+  # Instead we are shuffling data.
+  options = tf.data.Options()
+  options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.OFF
+  result = transformed_ds.with_options(options)
+  tf.print(str(result))
+  return result
 
 def get_vocabulary_size_dict():
   client = bigquery.Client(location="US", project=PROJECT_ID)
@@ -256,88 +250,117 @@ def create_feature_columns(categorical_vocabulary_size_dict):
   feature_columns.extend(list(create_categorical_feature_column(categorical_vocabulary_size_dict, key) for key, _ in categorical_vocabulary_size_dict.items()))
   return feature_columns
 
+def create_keras_model():
+  categorical_vocabulary_size_dict = get_vocabulary_size_dict()
+  feature_columns = create_feature_columns(categorical_vocabulary_size_dict)
+  print("categorical_vocabulary_size_dict: " + str(categorical_vocabulary_size_dict))
+  feature_layer = tf.keras.layers.DenseFeatures(feature_columns, name="feature_layer")
+  Dense = tf.keras.layers.Dense
+  model = tf.keras.Sequential(
+  [
+      feature_layer,
+      Dense(2560, activation=tf.nn.relu),
+      Dense(1024, activation=tf.nn.relu),
+      Dense(256, activation=tf.nn.relu),
+      Dense(1, activation=tf.nn.sigmoid)
+  ])
+
+  # Compile Keras model
+  model.compile(
+      # cannot use Adagrad with mirroredstartegy https://github.com/tensorflow/tensorflow/issues/19551
+      #optimizer=tf.optimizers.Adagrad(learning_rate=0.05),
+      optimizer=tf.optimizers.SGD(learning_rate=0.05),
+      loss=tf.keras.losses.BinaryCrossentropy(),
+      metrics=['accuracy'])
+  #model.summary()
+  return model
+
+def train_keras_model(model_dir):
+  logging.info('training keras model')
+  #strategy = tf.distribute.experimental.ParameterServerStrategy()
+  strategy = tf.distribute.experimental.MultiWorkerMirroredStrategy() # doesn't work because of https://b.corp.google.com/issues/142700914
+  #strategy = tf.distribute.MirroredStrategy()
+  #strategy = tf.distribute.OneDeviceStrategy(device="/cpu:0")
+  with strategy.scope():
+    model = create_keras_model()
+    #training_ds = read_bigquery('criteo_kaggle','days_strings').take(1000000).shuffle(10000).batch(BATCH_SIZE).prefetch(100)
+    #training_ds = read_bigquery('criteo_kaggle','days').skip(100000).take(50000).shuffle(10000).batch(BATCH_SIZE)
+    training_ds = read_bigquery('criteo_kaggle','days').take(1000000).shuffle(10000).batch(BATCH_SIZE)
+    print('checking dataset')
+
+    log_dir= model_dir + "/" + os.environ['HOSTNAME'] + "/logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, embeddings_freq=1, profile_batch=0)
+
+    checkpoints_dir = model_dir + "/" + os.environ['HOSTNAME'] + "/checkpoints"
+    if not os.path.exists(checkpoints_dir):
+        os.makedirs(checkpoints_dir)
+    checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
+    # crashing https://github.com/tensorflow/tensorflow/issues/27688
+    #checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoints_file_path, verbose=1, mode='max')
+
+    fit_verbosity = 1 if TARGET == TARGET_TYPE.local else 2
+    model.fit(training_ds, epochs=2, verbose=fit_verbosity,
+    callbacks=[tensorboard_callback]
+    )
+
+  return model
+
+def evaluate_keras_model(model):
+  logging.info('evaluating keras model')
+  eval_ds = read_bigquery('criteo_kaggle','days').skip(100000).take(50 * BATCH_SIZE).batch(BATCH_SIZE)
+  loss, accuracy = model.evaluate(eval_ds)
+  logging.info("Eval - Loss: {}, Accuracy: {}".format(loss, accuracy))
+
+def input_fn():
+  training_ds = read_bigquery('criteo_kaggle','days').take(1000000).shuffle(10000).batch(BATCH_SIZE)
+  return training_ds
+
 def main(argv):
     if len(argv) < 1:
       raise app.UsageError("Too few command-line arguments.")
 
+    tf.compat.v1.enable_eager_execution()
+
     model_dir = os.path.join(sys.argv[1], 'model.joblib')
     logging.info('Model will be saved to "%s..."', model_dir)
 
-    #tf.debugging.set_log_device_placement(True)
-    print("tf.config.experimental.list_logical_devices(GPU): " + str(tf.config.experimental.list_logical_devices('GPU')))
-    print("tf.config.experimental.list_physical_devices(GPU): " + str(tf.config.experimental.list_physical_devices('GPU')))
-    print("device_lib.list_local_devices(): " + str(device_lib.list_local_devices()))
-    print("tf.test.is_gpu_available(): " + str(tf.test.is_gpu_available()))
+    # #tf.debugging.set_log_device_placement(True)
+    # print("tf.config.experimental.list_logical_devices(GPU): " + str(tf.config.experimental.list_logical_devices('GPU')))
+    # print("tf.config.experimental.list_physical_devices(GPU): " + str(tf.config.experimental.list_physical_devices('GPU')))
+    # print("device_lib.list_local_devices(): " + str(device_lib.list_local_devices()))
+    # print("tf.test.is_gpu_available(): " + str(tf.test.is_gpu_available()))
 
-    print("reading categorical_vocabulary_size_dict")
-    categorical_vocabulary_size_dict = get_vocabulary_size_dict()
+    #model = train_keras_model(model_dir)
+    #evaluate_keras_model(model)
 
-    strategy = tf.distribute.MirroredStrategy()
-    #strategy = tf.distribute.OneDeviceStrategy(device="/cpu:0")
-    with strategy.scope():
-      feature_columns = create_feature_columns(categorical_vocabulary_size_dict)
-      print("categorical_vocabulary_size_dict: " + str(categorical_vocabulary_size_dict))
-      feature_layer = tf.keras.layers.DenseFeatures(feature_columns)
-      Dense = tf.keras.layers.Dense
-      model = tf.keras.Sequential(
-      [
-          feature_layer,
-          Dense(2560, activation=tf.nn.relu),
-          Dense(1024, activation=tf.nn.relu),
-          Dense(256, activation=tf.nn.relu),
-          Dense(1, activation=tf.nn.sigmoid)
-      ])
+    model = create_keras_model()
 
-      # Compile Keras model
-      model.compile(
-          # cannot use Adagrad with mirroredstartegy https://github.com/tensorflow/tensorflow/issues/19551
-          #optimizer=tf.optimizers.Adagrad(learning_rate=0.05), 
-          optimizer=tf.optimizers.SGD(learning_rate=0.05),
-          loss=tf.keras.losses.BinaryCrossentropy(),
-          metrics=['accuracy'])
+    tf.keras.backend.set_learning_phase(True)
+    # Define DistributionStrategies and convert the Keras Model to an
+    # Estimator that utilizes these DistributionStrateges.
+    # Evaluator is a single worker, so using MirroredStrategy.
+    config = tf.estimator.RunConfig(
+            train_distribute=tf.distribute.MirroredStrategy(),
+            eval_distribute=tf.distribute.MirroredStrategy())
+    keras_estimator = tf.keras.estimator.model_to_estimator(
+        keras_model=model, config=config, model_dir=model_dir)
 
-      #training_ds = read_bigquery('criteo_kaggle','days_strings').take(1000000).shuffle(10000).batch(BATCH_SIZE).prefetch(100)
-      #training_ds = read_bigquery('criteo_kaggle','days').skip(100000).take(50000).shuffle(10000).batch(BATCH_SIZE)
-      training_ds = read_bigquery('criteo_kaggle','days').take(1000000).shuffle(10000).batch(BATCH_SIZE)
-      print('checking dataset')
-      # row_index = 0
-      # for row in training_ds.take(2):
-      #     print(">>>>>> row %d: %s" % (row_index, row))
-      #     row_index += 1
-
-      if not os.path.exists(model_dir + "/checkpoints"):
-          os.makedirs(model_dir + "/checkpoints")
-
-      log_dir= model_dir + "/logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-      #tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=0, embeddings_freq=0)
-      tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, embeddings_freq=1, profile_batch=0)
-
-      #filepath= model_dir + "/checkpoints/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
-      #checkpoint = ModelCheckpoint(filepath, monitor='accuracy', verbose=1, mode='max')
-      filepath= model_dir + "/checkpoints/epochs:{epoch:03d}.hdf5"
-      checkpoint = ModelCheckpoint(filepath, verbose=1, mode='max')
-
-      model.fit(training_ds, epochs=5, verbose=2,
-      callbacks=[tensorboard_callback, checkpoint]
-      )
-    #, callbacks=[tensorboard_callback, checkpoint]
-    print('evaluating model')
-
-    eval_ds = read_bigquery('criteo_kaggle','days').skip(100000).take(50 * BATCH_SIZE).batch(BATCH_SIZE)
-    # row_index = 0
-    # for row in eval_ds.take(2):
-    #     print(">>>>>> row %d: %s" % (row_index, row))
-    #     row_index += 1
-
-    loss, accuracy = model.evaluate(eval_ds)
-    print("Eval - Loss: {}, Accuracy: {}".format(loss, accuracy))
+    logging.info('!!!!!!!!!!!!! training MirroredStrategy on keras_estimator !!!!!!!!!!!!!!!!!!!')
+    tf.estimator.train_and_evaluate(
+        keras_estimator,
+        train_spec=tf.estimator.TrainSpec(input_fn=input_fn, max_steps=5),
+        eval_spec=tf.estimator.EvalSpec(input_fn=input_fn))
 
 
 if __name__ == '__main__':
-  print('executable')
+  logging_client = google.cloud.logging.Client()
+  logging_client.setup_logging()
+  logging.warning('>>>>>>>>>>>>>>>>>>>>>>>>>> app started logging <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<')
+  print('>>>>>>>>>>>>>. executable <<<<<<<<<<<<<<<<<<<<<<<<')
   print(sys.executable)
   print(sys.version)
   print(sys.version_info)
+  logging.warning(os.system('env'))
 
   #print('pip')
   #print(os.system('pip --version'))
@@ -348,14 +371,25 @@ if __name__ == '__main__':
   print(os.system('pwd'))
   print(os.system('ls -al'))
   if (os.environ.get('CLOUDSDK_METRICS_COMMAND_NAME') == 'gcloud.ai-platform.local.train'):
-    print('training locally')
-    print('removing TF_CONFIG')
+    TARGET = TARGET_TYPE.local
+    logging.warning('training locally')
+    logging.warning('removing TF_CONFIG')
     os.environ.pop('TF_CONFIG')
   else:
-    print('training in cloud')
+    TARGET = TARGET_TYPE.cloud
+    logging.warning('training in cloud')
     os.system('gsutil cp gs://alekseyv-scalableai-dev-private-bucket/criteo/alekseyv-scalableai-dev-077efe757ef6.json .')
     os.environ[ "GOOGLE_APPLICATION_CREDENTIALS"] = os.getcwd() + '/' + GOOGLE_APPLICATION_CREDENTIALS
-  print(os.environ)
-  print(os.system('cat ${GOOGLE_APPLICATION_CREDENTIALS}'))
+    #os.system('gsutil cp gs://alekseyv-scalableai-dev-private-bucket/criteo/tensorflow_io-0.10.0-cp27-cp27mu-manylinux2010_x86_64.wh .')
+    #os.system('pip install --no-deps tensorflow_io-0.10.0-cp27-cp27mu-manylinux2010_x86_64.whl')
+
+  TF_CONFIG = os.environ.get('TF_CONFIG')
+  if TF_CONFIG and '"master"' in TF_CONFIG:
+    logging.warning('TF_CONFIG before modification:' + str(os.environ['TF_CONFIG']))
+    os.environ['TF_CONFIG'] = TF_CONFIG.replace('"master"', '"chief"')
+
+  if TF_CONFIG:
+    logging.warning('TF_CONFIG:' + str(os.environ['TF_CONFIG']))
+  logging.warning(os.system('cat ${GOOGLE_APPLICATION_CREDENTIALS}'))
   app.run(main)
 

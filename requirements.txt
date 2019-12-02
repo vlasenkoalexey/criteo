@@ -1,0 +1,11 @@
+# The pip syntax below allows us to not repeat
+# In order to not maintain two separate dependency
+# lists in setup.py vs requirements.txt
+# See https://caremad.io/posts/2013/07/setup-vs-requirement/
+
+--index-url https://pypi.python.org/simple/
+
+-e .
+
+https://storage.googleapis.com/alekseyv-scalableai-dev-public-bucket/temp/tensorflow_io-0.10.0-cp27-cp27mu-manylinux2010_x86_64.whl
+tf-nightly==2.1.0.dev20191125
