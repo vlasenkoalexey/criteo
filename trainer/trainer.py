@@ -98,6 +98,16 @@ CSV_SCHEMA = [
       bigquery.SchemaField("cat26", "STRING")
   ]
 
+# hack because model_to_estimator does not understand input feature names, see
+# https://cs.corp.google.com/piper///depot/google3/third_party/tensorflow_estimator/python/estimator/keras.py?rcl=282034610&l=151
+KERAS_TO_ESTIMATOR_FEATURE_NAMES = {}
+for i in range(0, len(CSV_SCHEMA)):
+  if i != 0:  # skip label
+    KERAS_TO_ESTIMATOR_FEATURE_NAMES[CSV_SCHEMA[i].name] = 'input_{}'.format(i)
+
+print('KERAS_TO_ESTIMATOR_FEATURE_NAMES')
+print(KERAS_TO_ESTIMATOR_FEATURE_NAMES)
+
 def get_mean_and_std_dicts():
   #client = bigquery.Client(location="US", project=PROJECT_ID)
   client = bigquery.Client(project=PROJECT_ID)
@@ -143,7 +153,10 @@ def transofrom_row(row_dict, mean_dict, std_dict):
             dict_without_label[field.name] = (value - mean_dict[field.name]) / std_dict[field.name]
         else:
             dict_without_label[field.name] = 0.0 # don't use normalized 0 value for nulls
-  return (dict_without_label, label)
+
+  dict_with_esitmator_keys = { KERAS_TO_ESTIMATOR_FEATURE_NAMES[k]:v for k,v in dict_without_label.items() }
+
+  return (dict_with_esitmator_keys, label)
 
 def read_bigquery(dataset_id, table_name):
 
@@ -177,7 +190,7 @@ def read_bigquery(dataset_id, table_name):
   # See https://www.tensorflow.org/tutorials/distribute/multi_worker_with_keras#dataset_sharding_and_batch_size
   # Instead we are shuffling data.
   options = tf.data.Options()
-  options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.OFF
+#  options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.OFF
   result = transformed_ds.with_options(options)
   tf.print(str(result))
   return result
@@ -232,7 +245,7 @@ def create_categorical_feature_column(categorical_vocabulary_size_dict, key):
   hash_bucket_size = min(categorical_vocabulary_size_dict[key], 100000)
   # TODO: consider using categorical_column_with_vocabulary_list
   categorical_feature_column = tf.feature_column.categorical_column_with_hash_bucket(
-    key,
+    KERAS_TO_ESTIMATOR_FEATURE_NAMES[key],
     hash_bucket_size,
     dtype=tf.dtypes.string
   )
@@ -246,8 +259,8 @@ def create_categorical_feature_column(categorical_vocabulary_size_dict, key):
 
 def create_feature_columns(categorical_vocabulary_size_dict):
   feature_columns = []
-  feature_columns.extend(list(tf.feature_column.numeric_column(field.name, dtype=tf.dtypes.float32)  for field in CSV_SCHEMA if field.field_type == 'INTEGER' and field.name != 'label'))
-  feature_columns.extend(list(create_categorical_feature_column(categorical_vocabulary_size_dict, key) for key, _ in categorical_vocabulary_size_dict.items()))
+  feature_columns.extend(list(tf.feature_column.numeric_column(KERAS_TO_ESTIMATOR_FEATURE_NAMES[field.name], dtype=tf.dtypes.float32)  for field in CSV_SCHEMA if field.field_type == 'INTEGER' and field.name != 'label'))
+  #feature_columns.extend(list(create_categorical_feature_column(categorical_vocabulary_size_dict, key) for key, _ in categorical_vocabulary_size_dict.items()))
   return feature_columns
 
 def create_keras_model():
@@ -272,6 +285,8 @@ def create_keras_model():
       optimizer=tf.optimizers.SGD(learning_rate=0.05),
       loss=tf.keras.losses.BinaryCrossentropy(),
       metrics=['accuracy'])
+  # HACK: https://b.corp.google.com/issues/114035274
+  #model._is_graph_network = True
   #model.summary()
   return model
 
@@ -334,16 +349,21 @@ def main(argv):
     #evaluate_keras_model(model)
 
     model = create_keras_model()
+    print("model.input_names:")
+    print(model._is_graph_network)
+    print(dir(model))
 
     tf.keras.backend.set_learning_phase(True)
     # Define DistributionStrategies and convert the Keras Model to an
     # Estimator that utilizes these DistributionStrateges.
     # Evaluator is a single worker, so using MirroredStrategy.
-    config = tf.estimator.RunConfig(
-            train_distribute=tf.distribute.MirroredStrategy(),
-            eval_distribute=tf.distribute.MirroredStrategy())
+    # config = tf.estimator.RunConfig(
+    #         train_distribute=tf.distribute.MirroredStrategy(),
+    #         eval_distribute=tf.distribute.MirroredStrategy())
+    # keras_estimator = tf.keras.estimator.model_to_estimator(
+    #     keras_model=model, config=config, model_dir=model_dir)
     keras_estimator = tf.keras.estimator.model_to_estimator(
-        keras_model=model, config=config, model_dir=model_dir)
+        keras_model=model, model_dir=model_dir)
 
     logging.info('!!!!!!!!!!!!! training MirroredStrategy on keras_estimator !!!!!!!!!!!!!!!!!!!')
     tf.estimator.train_and_evaluate(
