@@ -24,7 +24,7 @@ TIER="CUSTOM" # BASIC | BASIC_GPU | STANDARD_1 | PREMIUM_1
 
 export BUCKET_NAME="alekseyv-scalableai-dev-criteo-model-bucket"
 export REGION="us-central1"
-export MODEL_NAME="criteo_kaggle1" # change to your model name
+export MODEL_NAME="criteo_kaggle_esitmator" # change to your model name
 export PYTHON_VERSION="3.7"
 export RUNTIME_VERSION="1.14"
 

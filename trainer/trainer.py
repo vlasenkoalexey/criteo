@@ -45,10 +45,7 @@ LOCATION = 'us'
 PROJECT_ID = "alekseyv-scalableai-dev"
 GOOGLE_APPLICATION_CREDENTIALS = "alekseyv-scalableai-dev-077efe757ef6.json"
 
-# # Download options.
-# DATA_URL = 'gs://alekseyv-scalableai-dev-public-bucket/criteo_kaggle.tar.gz'
-
-# DATASET_ID = 'criteo_kaggle'
+DATASET_ID = 'criteo_kaggle'
 
 BATCH_SIZE = 128
 
@@ -56,7 +53,6 @@ TARGET_TYPE = Enum('TARGET_TYPE', 'local cloud')
 
 CSV_SCHEMA = [
       bigquery.SchemaField("label", "INTEGER", mode='REQUIRED'),
-      # using strings because of https://github.com/tensorflow/io/issues/619
       bigquery.SchemaField("int1", "INTEGER"),
       bigquery.SchemaField("int2", "INTEGER"),
       bigquery.SchemaField("int3", "INTEGER"),
@@ -134,9 +130,6 @@ def get_mean_and_std_dicts():
   )  # API request - starts the query
 
   df = query_job.to_dataframe()
-  #print(query_job.result())
-  #print(query_job.errors)
-  #print(df)
 
   mean_dict = dict((field[0].replace('avg_', ''), df[field[0]][0]) for field in df.items() if field[0].startswith('avg'))
   std_dict = dict((field[0].replace('std_', ''), df[field[0]][0]) for field in df.items() if field[0].startswith('std'))
@@ -144,7 +137,6 @@ def get_mean_and_std_dicts():
 
 def transofrom_row(row_dict, mean_dict, std_dict):
   dict_without_label = row_dict.copy()
-  #tf.print(dict_without_label)
   label = dict_without_label.pop('label')
   for field in CSV_SCHEMA:
     if (field.name.startswith('int')):
@@ -154,12 +146,12 @@ def transofrom_row(row_dict, mean_dict, std_dict):
         else:
             dict_without_label[field.name] = 0.0 # don't use normalized 0 value for nulls
 
-  dict_with_esitmator_keys = { KERAS_TO_ESTIMATOR_FEATURE_NAMES[k]:v for k,v in dict_without_label.items() }
+  #dict_with_esitmator_keys = { KERAS_TO_ESTIMATOR_FEATURE_NAMES[k]:v for k,v in dict_without_label.items() }
+  dict_with_esitmator_keys = { k:v for k,v in dict_without_label.items() }
 
   return (dict_with_esitmator_keys, label)
 
 def read_bigquery(dataset_id, table_name):
-
   (mean_dict, std_dict) = get_mean_and_std_dicts()
   tensorflow_io_bigquery_client = BigQueryClient()
   read_session = tensorflow_io_bigquery_client.read_session(
@@ -195,57 +187,14 @@ def read_bigquery(dataset_id, table_name):
   tf.print(str(result))
   return result
 
-def get_vocabulary_size_dict():
-  client = bigquery.Client(location="US", project=PROJECT_ID)
-  query = """
-    SELECT
-    COUNT(DISTINCT cat1) as cat1,
-    COUNT(DISTINCT cat2) as cat2,
-    COUNT(DISTINCT cat3) as cat3,
-    COUNT(DISTINCT cat4) as cat4,
-    COUNT(DISTINCT cat5) as cat5,
-    COUNT(DISTINCT cat6) as cat6,
-    COUNT(DISTINCT cat7) as cat7,
-    COUNT(DISTINCT cat8) as cat8,
-    COUNT(DISTINCT cat9) as cat9,
-    COUNT(DISTINCT cat10) as cat10,
-    COUNT(DISTINCT cat11) as cat11,
-    COUNT(DISTINCT cat12) as cat12,
-    COUNT(DISTINCT cat13) as cat13,
-    COUNT(DISTINCT cat14) as cat14,
-    COUNT(DISTINCT cat15) as cat15,
-    COUNT(DISTINCT cat16) as cat16,
-    COUNT(DISTINCT cat17) as cat17,
-    COUNT(DISTINCT cat18) as cat18,
-    COUNT(DISTINCT cat19) as cat19,
-    COUNT(DISTINCT cat20) as cat20,
-    COUNT(DISTINCT cat21) as cat21,
-    COUNT(DISTINCT cat22) as cat22,
-    COUNT(DISTINCT cat23) as cat23,
-    COUNT(DISTINCT cat24) as cat24,
-    COUNT(DISTINCT cat25) as cat25,
-    COUNT(DISTINCT cat26) as cat26
-    FROM
-      `alekseyv-scalableai-dev.criteo_kaggle.days`
-  """
-  query_job = client.query(
-      query,
-      location="US",
-  )  # API request - starts the query
 
-  df = query_job.to_dataframe()
-  #print(query_job.result())
-  #print(query_job.errors)
-  #print(df)
-  dictionary = dict((field[0], df[field[0]][0]) for field in df.items())
-  #print(dir(df))
-  return dictionary
 
 def create_categorical_feature_column(categorical_vocabulary_size_dict, key):
   hash_bucket_size = min(categorical_vocabulary_size_dict[key], 100000)
   # TODO: consider using categorical_column_with_vocabulary_list
   categorical_feature_column = tf.feature_column.categorical_column_with_hash_bucket(
-    KERAS_TO_ESTIMATOR_FEATURE_NAMES[key],
+    #KERAS_TO_ESTIMATOR_FEATURE_NAMES[key],
+    key,
     hash_bucket_size,
     dtype=tf.dtypes.string
   )
@@ -259,11 +208,11 @@ def create_categorical_feature_column(categorical_vocabulary_size_dict, key):
 
 def create_feature_columns(categorical_vocabulary_size_dict):
   feature_columns = []
-  feature_columns.extend(list(tf.feature_column.numeric_column(KERAS_TO_ESTIMATOR_FEATURE_NAMES[field.name], dtype=tf.dtypes.float32)  for field in CSV_SCHEMA if field.field_type == 'INTEGER' and field.name != 'label'))
-  #feature_columns.extend(list(create_categorical_feature_column(categorical_vocabulary_size_dict, key) for key, _ in categorical_vocabulary_size_dict.items()))
+  #feature_columns.extend(list(tf.feature_column.numeric_column(KERAS_TO_ESTIMATOR_FEATURE_NAMES[field.name], dtype=tf.dtypes.float32)  for field in CSV_SCHEMA if field.field_type == 'INTEGER' and field.name != 'label'))
+  feature_columns.extend(list(create_categorical_feature_column(categorical_vocabulary_size_dict, key) for key, _ in categorical_vocabulary_size_dict.items()))
   return feature_columns
 
-def create_keras_model():
+def create_keras_model_sequential():
   categorical_vocabulary_size_dict = get_vocabulary_size_dict()
   feature_columns = create_feature_columns(categorical_vocabulary_size_dict)
   print("categorical_vocabulary_size_dict: " + str(categorical_vocabulary_size_dict))
@@ -287,17 +236,17 @@ def create_keras_model():
       metrics=['accuracy'])
   # HACK: https://b.corp.google.com/issues/114035274
   #model._is_graph_network = True
-  #model.summary()
+  #logging.info(model.summary())
   return model
 
-def train_keras_model(model_dir):
+def train_keras_model_sequential(model_dir):
   logging.info('training keras model')
   #strategy = tf.distribute.experimental.ParameterServerStrategy()
   strategy = tf.distribute.experimental.MultiWorkerMirroredStrategy() # doesn't work because of https://b.corp.google.com/issues/142700914
   #strategy = tf.distribute.MirroredStrategy()
   #strategy = tf.distribute.OneDeviceStrategy(device="/cpu:0")
   with strategy.scope():
-    model = create_keras_model()
+    model = create_keras_model_sequential()
     #training_ds = read_bigquery('criteo_kaggle','days_strings').take(1000000).shuffle(10000).batch(BATCH_SIZE).prefetch(100)
     #training_ds = read_bigquery('criteo_kaggle','days').skip(100000).take(50000).shuffle(10000).batch(BATCH_SIZE)
     training_ds = read_bigquery('criteo_kaggle','days').take(1000000).shuffle(10000).batch(BATCH_SIZE)
@@ -330,36 +279,52 @@ def input_fn():
   training_ds = read_bigquery('criteo_kaggle','days').take(1000000).shuffle(10000).batch(BATCH_SIZE)
   return training_ds
 
-def main(argv):
-    if len(argv) < 1:
-      raise app.UsageError("Too few command-line arguments.")
+def create_input_layer(categorical_vocabulary_size_dict):
+    numeric_feature_columns = list(tf.feature_column.numeric_column(field.name, dtype=tf.dtypes.float32)  for field in CSV_SCHEMA if field.field_type == 'INTEGER' and field.name != 'label')
+    numerical_input_layers = {
+       feature_column.name: tf.keras.layers.Input(name=feature_column.name, shape=(1,), dtype=tf.float32)
+       for feature_column in numeric_feature_columns
+    }
+    categorical_feature_columns = list(create_categorical_feature_column(categorical_vocabulary_size_dict, key) for key, _ in categorical_vocabulary_size_dict.items())
+    #print("categorical_feature_columns: " + str(categorical_feature_columns))
+    categorical_input_layers = {
+       feature_column.categorical_column.name: tf.keras.layers.Input(name=feature_column.categorical_column.name, shape=(), dtype=tf.string)
+       for feature_column in categorical_feature_columns
+    }
+    #print("categorical_input_layers: " + str(categorical_input_layers))
+    input_layers = numerical_input_layers.copy()
+    input_layers.update(categorical_input_layers)
 
-    tf.compat.v1.enable_eager_execution()
+    return (input_layers, numeric_feature_columns + categorical_feature_columns)
 
-    model_dir = os.path.join(sys.argv[1], 'model.joblib')
-    logging.info('Model will be saved to "%s..."', model_dir)
+def create_keras_model_functional(categorical_vocabulary_size_dict):
+    (feature_layer_inputs, feature_columns) = create_input_layer(categorical_vocabulary_size_dict)
+    feature_layer = tf.keras.layers.DenseFeatures(feature_columns)
+    feature_layer_outputs = feature_layer(feature_layer_inputs)
+    x = tf.keras.layers.Dense(2560, activation=tf.nn.relu)(feature_layer_outputs)
+    x = tf.keras.layers.Dense(1024, activation=tf.nn.relu)(x)
+    x = tf.keras.layers.Dense(256, activation=tf.nn.relu)(x)
+    outputs = tf.keras.layers.Dense(1, activation=tf.nn.sigmoid)(x)
+    inputs=[v for v in feature_layer_inputs.values()]
+    model = tf.keras.Model(inputs=inputs, outputs=outputs)
 
-    # #tf.debugging.set_log_device_placement(True)
-    # print("tf.config.experimental.list_logical_devices(GPU): " + str(tf.config.experimental.list_logical_devices('GPU')))
-    # print("tf.config.experimental.list_physical_devices(GPU): " + str(tf.config.experimental.list_physical_devices('GPU')))
-    # print("device_lib.list_local_devices(): " + str(device_lib.list_local_devices()))
-    # print("tf.test.is_gpu_available(): " + str(tf.test.is_gpu_available()))
+    # Compile Keras model
+    model.compile(
+      # cannot use Adagrad with mirroredstartegy https://github.com/tensorflow/tensorflow/issues/19551
+      #optimizer=tf.optimizers.Adagrad(learning_rate=0.05),
+      optimizer=tf.optimizers.SGD(learning_rate=0.05),
+      loss=tf.keras.losses.BinaryCrossentropy(),
+      metrics=['accuracy'])
+    print("model: " + str(model.summary()))
+    return model
 
-    #model = train_keras_model(model_dir)
-    #evaluate_keras_model(model)
-
-    model = create_keras_model()
-    print("model.input_names:")
-    print(model._is_graph_network)
-    print(dir(model))
-
-    tf.keras.backend.set_learning_phase(True)
-    # Define DistributionStrategies and convert the Keras Model to an
-    # Estimator that utilizes these DistributionStrateges.
-    # Evaluator is a single worker, so using MirroredStrategy.
-    # config = tf.estimator.RunConfig(
-    #         train_distribute=tf.distribute.MirroredStrategy(),
-    #         eval_distribute=tf.distribute.MirroredStrategy())
+def train_keras_functional_model_to_estimator(model_dir):
+    categorical_vocabulary_size_dict = get_vocabulary_size_dict()
+    model = create_keras_model_functional(categorical_vocabulary_size_dict)
+    # tf.keras.backend.set_learning_phase(True)
+    config = tf.estimator.RunConfig(
+            train_distribute=tf.distribute.MirroredStrategy(),
+            eval_distribute=tf.distribute.MirroredStrategy())
     # keras_estimator = tf.keras.estimator.model_to_estimator(
     #     keras_model=model, config=config, model_dir=model_dir)
     keras_estimator = tf.keras.estimator.model_to_estimator(
@@ -372,24 +337,65 @@ def main(argv):
         eval_spec=tf.estimator.EvalSpec(input_fn=input_fn))
 
 
+def main(argv):
+    if len(argv) < 1:
+      raise app.UsageError("Too few command-line arguments.")
+
+    #tf.compat.v1.enable_eager_execution()
+
+    model_dir = os.path.join(sys.argv[1], 'model.joblib')
+    logging.info('Model will be saved to "%s..."', model_dir)
+
+    # #tf.debugging.set_log_device_placement(True)
+    # print("tf.config.experimental.list_logical_devices(GPU): " + str(tf.config.experimental.list_logical_devices('GPU')))
+    # print("tf.config.experimental.list_physical_devices(GPU): " + str(tf.config.experimental.list_physical_devices('GPU')))
+    # print("device_lib.list_local_devices(): " + str(device_lib.list_local_devices()))
+    # print("tf.test.is_gpu_available(): " + str(tf.test.is_gpu_available()))
+
+    dataset = read_bigquery('criteo_kaggle','days').take(10)
+    row_index = 0
+    for row in dataset.prefetch(10):
+      print("row %d: %s" % (row_index, row))
+      row_index += 1
+
+    #model = train_keras_model(model_dir)
+    #evaluate_keras_model(model)
+    #train_keras_functional_model_to_estimator(model_dir)
+
+    logging.warn('>>>>>>>>>>>>>>>>> training using DNNClassifier <<<<<<<<<<<<<<<<<<<')
+    categorical_vocabulary_size_dict = get_vocabulary_size_dict()
+    feature_columns = create_feature_columns(categorical_vocabulary_size_dict)
+
+    config = tf.estimator.RunConfig(
+        train_distribute=tf.distribute.MirroredStrategy(),
+        eval_distribute=tf.distribute.MirroredStrategy())
+
+    estimator = tf.estimator.DNNClassifier(
+        optimizer=tf.optimizers.SGD(learning_rate=0.05),
+        feature_columns=feature_columns,
+        hidden_units=[2560, 1024, 256],
+        model_dir=model_dir,
+        n_classes=2,
+        config=config)
+
+    tf.estimator.train_and_evaluate(
+        estimator,
+        train_spec=tf.estimator.TrainSpec(input_fn=input_fn, max_steps=2),
+        eval_spec=tf.estimator.EvalSpec(input_fn=input_fn))
+
+
 if __name__ == '__main__':
   logging_client = google.cloud.logging.Client()
   logging_client.setup_logging()
+  logging.getLogger().setLevel(logging.INFO)
   logging.warning('>>>>>>>>>>>>>>>>>>>>>>>>>> app started logging <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<')
-  print('>>>>>>>>>>>>>. executable <<<<<<<<<<<<<<<<<<<<<<<<')
-  print(sys.executable)
-  print(sys.version)
-  print(sys.version_info)
   logging.warning(os.system('env'))
-
-  #print('pip')
-  #print(os.system('pip --version'))
-  #print(os.system('pip list'))
-
   os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = GOOGLE_APPLICATION_CREDENTIALS
   os.environ['PROJECT_ID'] = PROJECT_ID
-  print(os.system('pwd'))
-  print(os.system('ls -al'))
+  logging.warning('python version: ' + str(sys.version))
+  logging.warning(os.system('pip list'))
+  #print(os.system('pwd'))
+  #print(os.system('ls -al'))
   if (os.environ.get('CLOUDSDK_METRICS_COMMAND_NAME') == 'gcloud.ai-platform.local.train'):
     TARGET = TARGET_TYPE.local
     logging.warning('training locally')
@@ -404,9 +410,9 @@ if __name__ == '__main__':
     #os.system('pip install --no-deps tensorflow_io-0.10.0-cp27-cp27mu-manylinux2010_x86_64.whl')
 
   TF_CONFIG = os.environ.get('TF_CONFIG')
-  if TF_CONFIG and '"master"' in TF_CONFIG:
-    logging.warning('TF_CONFIG before modification:' + str(os.environ['TF_CONFIG']))
-    os.environ['TF_CONFIG'] = TF_CONFIG.replace('"master"', '"chief"')
+  # if TF_CONFIG and '"master"' in TF_CONFIG:
+  #   logging.warning('TF_CONFIG before modification:' + str(os.environ['TF_CONFIG']))
+  #   os.environ['TF_CONFIG'] = TF_CONFIG.replace('"master"', '"chief"')
 
   if TF_CONFIG:
     logging.warning('TF_CONFIG:' + str(os.environ['TF_CONFIG']))

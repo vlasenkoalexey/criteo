@@ -21,7 +21,7 @@ echo "Training local ML model"
 
 export GOOGLE_APPLICATION_CREDENTIALS="${PWD}/alekseyv-scalableai-dev-077efe757ef6.json"
 
-MODEL_NAME="criteo_kaggle1" # Change to your model name, e.g. "estimator"
+MODEL_NAME="criteo_kaggle_estimator2" # Change to your model name, e.g. "estimator"
 
 PACKAGE_PATH=./trainer
 MODEL_DIR=./trained/${MODEL_NAME}

@@ -24,7 +24,8 @@ from setuptools import setup
 
 REQUIRED_PACKAGES = [
     'pandas==0.24.2',
-    'tf-nightly==2.1.0.dev20191125',
+    'tensorflow==2.0.0',
+    'tensorflow-io==0.10.0',
     'google-cloud-bigquery==1.22.0',
     'google-cloud-bigquery-storage==0.7.0',
     'google-cloud-logging==1.14.0'

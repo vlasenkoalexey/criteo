@@ -11,13 +11,13 @@ WORKDIR /root
 RUN pip install --upgrade pip
 RUN pip install setuptools requests wheel
 RUN pip install pandas
-#RUN pip install tensorflow==2.0.0
-#RUN pip install tensorflow-io==0.9.1
+RUN pip install tensorflow==2.0.0
+RUN pip install tensorflow-io==0.10.0
 RUN pip install google-cloud-bigquery
 RUN pip install google-cloud-bigquery-storage
 RUN pip install google-cloud-logging
 
-RUN pip install tf-nightly==2.1.0.dev20191126
+#RUN pip install tf-nightly==2.1.0.dev20191126
 
 
 # Installs cloudml-hypertune for hyperparameter tuning.
@@ -46,8 +46,8 @@ RUN echo '[GoogleCompute]\nservice_account = default' > /etc/boto.cfg
 ENV PROJECT_ID=alekseyv-scalableai-dev
 ENV GOOGLE_APPLICATION_CREDENTIALS=/root/alekseyv-scalableai-dev-077efe757ef6.json
 
-COPY dependencies/tensorflow_io-0.10.0-cp27-cp27mu-manylinux2010_x86_64.whl /root
-RUN pip install --no-deps /root/tensorflow_io-0.10.0-cp27-cp27mu-manylinux2010_x86_64.whl
+#COPY dependencies/tensorflow_io-0.10.0-cp27-cp27mu-manylinux2010_x86_64.whl /root
+#RUN pip install --no-deps /root/tensorflow_io-0.10.0-cp27-cp27mu-manylinux2010_x86_64.whl
 
 # Copies the trainer code
 RUN mkdir /root/trainer
