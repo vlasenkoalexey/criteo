@@ -35,7 +35,7 @@ setup(
     name='trainer',
     version='0.1',
     install_requires=REQUIRED_PACKAGES,
-    dependency_links=['https://storage.googleapis.com/alekseyv-scalableai-dev-public-bucket/temp/tensorflow_io-0.10.0-cp27-cp27mu-manylinux2010_x86_64.whl'],
+    #dependency_links=['https://storage.googleapis.com/alekseyv-scalableai-dev-public-bucket/temp/tensorflow_io-0.10.0-cp27-cp27mu-manylinux2010_x86_64.whl'],
     packages=find_packages(),
     include_package_data=True,
     description='Criteo dataset trainer',

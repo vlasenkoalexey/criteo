@@ -2,6 +2,9 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from absl import app
+from absl import flags
+
 import sys
 import os.path
 import logging
@@ -35,7 +38,8 @@ from tensorflow.python.data.ops import dataset_ops
 
 import google.cloud.logging
 
-import argparse
+FLAGS = flags.FLAGS
+flags.DEFINE_string("job-dir", "", "Job directory")
 
 LOCATION = 'us'
 PROJECT_ID = "alekseyv-scalableai-dev"
@@ -44,21 +48,8 @@ GOOGLE_APPLICATION_CREDENTIALS = "alekseyv-scalableai-dev-077efe757ef6.json"
 DATASET_ID = 'criteo_kaggle'
 
 BATCH_SIZE = 128
-EPOCHS = 5
-
-FULL_TRAIN_DATASET_SIZE = 36670642 # select count(1) from `alekseyv-scalableai-dev.criteo_kaggle.train`
-SMALL_TRAIN_DATASET_SIZE = 366715  # select count(1) from `alekseyv-scalableai-dev.criteo_kaggle.train_small`
 
 TARGET_TYPE = Enum('TARGET_TYPE', 'local cloud')
-TARGET = TARGET_TYPE.local
-
-# https://www.tensorflow.org/guide/distributed_training
-DISTRIBUTION_STRATEGY_TYPE_VALUES = 'tf.distribute.MirroredStrategy tf.distribute.experimental.ParameterServerStrategy ' \
-  'tf.distribute.experimental.MultiWorkerMirroredStrategy tf.distribute.experimental.CentralStorageStrategy'
-TRAINING_FUNCTION_VALUES = 'train_keras_sequential train_keras_functional train_keras_to_estimator_functional train_keras_to_estimator_sequential train_estimator'
-
-DATASET_SIZE_TYPE = Enum('DATASET_SIZE_TYPE', 'full small')
-DATASET_SIZE = DATASET_SIZE_TYPE.small
 
 CSV_SCHEMA = [
       bigquery.SchemaField("label", "INTEGER", mode='REQUIRED'),
@@ -146,6 +137,7 @@ def get_vocabulary_size_dict():
   return dictionary
 
 def get_mean_and_std_dicts():
+  #client = bigquery.Client(location="US", project=PROJECT_ID)
   client = bigquery.Client(project=PROJECT_ID)
   query = """
     select
@@ -190,8 +182,6 @@ def transofrom_row(row_dict, mean_dict, std_dict):
   return (dict_with_esitmator_keys, label)
 
 def read_bigquery(table_name):
-  if DATASET_SIZE == DATASET_SIZE_TYPE.small:
-    table_name += '_small'
   (mean_dict, std_dict) = get_mean_and_std_dicts()
   requested_streams_count = 10
   tensorflow_io_bigquery_client = BigQueryClient()
@@ -203,9 +193,10 @@ def read_bigquery(table_name):
            else dtypes.string for field in CSV_SCHEMA),
       requested_streams=requested_streams_count)
 
-  # manually sharding output instaead of using return read_session.parallel_read_rows()
+  #return read_session.parallel_read_rows()
+
   streams = read_session.get_streams()
-  # streams_count = len(streams) # does not work for Estimator
+  #streams_count = len(streams)
   streams_count = tf.size(streams)
   streams_count64 = tf.cast(streams_count, dtype=tf.int64)
   streams_ds = dataset_ops.Dataset.from_tensor_slices(streams).shuffle(buffer_size=streams_count64)
@@ -214,28 +205,21 @@ def read_bigquery(table_name):
             cycle_length=streams_count64,
             num_parallel_calls=streams_count64)
 
-  transformed_ds = dataset.map (lambda row: transofrom_row(row, mean_dict, std_dict), num_parallel_calls=streams_count) \
-    .shuffle(10000) \
-    .batch(BATCH_SIZE) \
-    .prefetch(100) \
+  transformed_ds = dataset.map (lambda row: transofrom_row(row, mean_dict, std_dict), num_parallel_calls=streams_count)
 
-  # TODO: enable once tf.data.experimental.AutoShardPolicy.OFF is available
   # Interleave dataset is not shardable, turning off sharding
   # See https://www.tensorflow.org/tutorials/distribute/multi_worker_with_keras#dataset_sharding_and_batch_size
   # Instead we are shuffling data.
-  # options = tf.data.Options()
+  options = tf.data.Options()
   #  options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.OFF
-  # return transformed_ds.with_options(options)
-  return transformed_ds
-
-def get_max_steps():
-  dataset_size = FULL_TRAIN_DATASET_SIZE if DATASET_SIZE == DATASET_SIZE_TYPE.full else SMALL_TRAIN_DATASET_SIZE
-  return EPOCHS * dataset_size // BATCH_SIZE
+  result = transformed_ds.with_options(options)
+  return result
 
 def create_categorical_feature_column(categorical_vocabulary_size_dict, key):
   hash_bucket_size = min(categorical_vocabulary_size_dict[key], 100000)
   # TODO: consider using categorical_column_with_vocabulary_list
   categorical_feature_column = tf.feature_column.categorical_column_with_hash_bucket(
+    #KERAS_TO_ESTIMATOR_FEATURE_NAMES[key],
     key,
     hash_bucket_size,
     dtype=tf.dtypes.string
@@ -254,47 +238,10 @@ def create_feature_columns(categorical_vocabulary_size_dict):
   feature_columns.extend(list(create_categorical_feature_column(categorical_vocabulary_size_dict, key) for key, _ in categorical_vocabulary_size_dict.items()))
   return feature_columns
 
-def create_input_layer(categorical_vocabulary_size_dict):
-    numeric_feature_columns = list(tf.feature_column.numeric_column(field.name, dtype=tf.dtypes.float32)  for field in CSV_SCHEMA if field.field_type == 'INTEGER' and field.name != 'label')
-    numerical_input_layers = {
-       feature_column.name: tf.keras.layers.Input(name=feature_column.name, shape=(1,), dtype=tf.float32)
-       for feature_column in numeric_feature_columns
-    }
-    categorical_feature_columns = list(create_categorical_feature_column(categorical_vocabulary_size_dict, key) for key, _ in categorical_vocabulary_size_dict.items())
-    categorical_input_layers = {
-       feature_column.categorical_column.name: tf.keras.layers.Input(name=feature_column.categorical_column.name, shape=(), dtype=tf.string)
-       for feature_column in categorical_feature_columns
-    }
-    input_layers = numerical_input_layers.copy()
-    input_layers.update(categorical_input_layers)
-
-    return (input_layers, numeric_feature_columns + categorical_feature_columns)
-
-def create_keras_model_functional():
-    categorical_vocabulary_size_dict = get_vocabulary_size_dict()
-    (feature_layer_inputs, feature_columns) = create_input_layer(categorical_vocabulary_size_dict)
-    feature_layer = tf.keras.layers.DenseFeatures(feature_columns)
-    feature_layer_outputs = feature_layer(feature_layer_inputs)
-    x = tf.keras.layers.Dense(2560, activation=tf.nn.relu)(feature_layer_outputs)
-    x = tf.keras.layers.Dense(1024, activation=tf.nn.relu)(x)
-    x = tf.keras.layers.Dense(256, activation=tf.nn.relu)(x)
-    outputs = tf.keras.layers.Dense(1, activation=tf.nn.sigmoid)(x)
-    inputs=[v for v in feature_layer_inputs.values()]
-    model = tf.keras.Model(inputs=inputs, outputs=outputs)
-
-    # Compile Keras model
-    model.compile(
-      # cannot use Adagrad with mirroredstartegy https://github.com/tensorflow/tensorflow/issues/19551
-      #optimizer=tf.optimizers.Adagrad(learning_rate=0.05),
-      optimizer=tf.optimizers.SGD(learning_rate=0.05),
-      loss=tf.keras.losses.BinaryCrossentropy(),
-      metrics=['accuracy'])
-    logging.info("model: " + str(model.summary()))
-    return model
-
 def create_keras_model_sequential():
   categorical_vocabulary_size_dict = get_vocabulary_size_dict()
   feature_columns = create_feature_columns(categorical_vocabulary_size_dict)
+  print("categorical_vocabulary_size_dict: " + str(categorical_vocabulary_size_dict))
   feature_layer = tf.keras.layers.DenseFeatures(feature_columns, name="feature_layer")
   Dense = tf.keras.layers.Dense
   model = tf.keras.Sequential(
@@ -313,191 +260,190 @@ def create_keras_model_sequential():
       optimizer=tf.optimizers.SGD(learning_rate=0.05),
       loss=tf.keras.losses.BinaryCrossentropy(),
       metrics=['accuracy'])
+  # HACK: https://b.corp.google.com/issues/114035274
+  #model._is_graph_network = True
+  #logging.info(model.summary())
   return model
 
-def train_and_evaluate_keras_model(model, model_dir):
-  dataset_size = FULL_TRAIN_DATASET_SIZE if DATASET_SIZE == DATASET_SIZE_TYPE.full else SMALL_TRAIN_DATASET_SIZE
-  logging.info('training datset size: '.format(dataset_size))
-  training_ds = read_bigquery('train')
+def train_keras_model_sequential(model_dir):
+  logging.info('training keras model')
+  #strategy = tf.distribute.experimental.ParameterServerStrategy()
+  strategy = tf.distribute.experimental.MultiWorkerMirroredStrategy() # doesn't work because of https://b.corp.google.com/issues/142700914
+  #strategy = tf.distribute.MirroredStrategy()
+  #strategy = tf.distribute.OneDeviceStrategy(device="/cpu:0")
+  with strategy.scope():
+    model = create_keras_model_sequential()
+    training_ds = read_bigquery('days').take(1000000).shuffle(10000).batch(BATCH_SIZE)
+    print('checking dataset')
 
-  log_dir= os.path.join(model_dir, "logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-  tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, embeddings_freq=1, profile_batch=0)
+    log_dir= model_dir + "/" + os.environ['HOSTNAME'] + "/logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, embeddings_freq=1, profile_batch=0)
 
-  checkpoints_dir= os.path.join(model_dir, "checkpoints")
-  if not os.path.exists(checkpoints_dir):
-      os.makedirs(checkpoints_dir)
-  checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
-  # crashing https://github.com/tensorflow/tensorflow/issues/27688
-  checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoints_file_path, verbose=1, mode='max')
-  fit_verbosity = 1 if TARGET == TARGET_TYPE.local else 2
-  model.fit(training_ds, epochs=EPOCHS, verbose=fit_verbosity, callbacks=[tensorboard_callback, checkpoint_callback])
-  eval_ds = read_bigquery('test')
+    checkpoints_dir = model_dir + "/" + os.environ['HOSTNAME'] + "/checkpoints"
+    if not os.path.exists(checkpoints_dir):
+        os.makedirs(checkpoints_dir)
+    checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
+    # crashing https://github.com/tensorflow/tensorflow/issues/27688
+    #checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoints_file_path, verbose=1, mode='max')
+
+    fit_verbosity = 1 if TARGET == TARGET_TYPE.local else 2
+    model.fit(training_ds, epochs=2, verbose=fit_verbosity,
+    callbacks=[tensorboard_callback]
+    )
+
+  return model
+
+def evaluate_keras_model(model):
+  logging.info('evaluating keras model')
+  eval_ds = read_bigquery('days').skip(100000).take(50 * BATCH_SIZE).batch(BATCH_SIZE)
   loss, accuracy = model.evaluate(eval_ds)
   logging.info("Eval - Loss: {}, Accuracy: {}".format(loss, accuracy))
 
-def train_keras_functional_model_to_estimator(strategy, model, model_dir):
-    logging.info('training for {} steps'.format(get_max_steps()))
+def input_fn():
+  training_ds = read_bigquery('days').take(1000000).shuffle(10000).batch(BATCH_SIZE)
+  return training_ds
+
+def create_input_layer(categorical_vocabulary_size_dict):
+    numeric_feature_columns = list(tf.feature_column.numeric_column(field.name, dtype=tf.dtypes.float32)  for field in CSV_SCHEMA if field.field_type == 'INTEGER' and field.name != 'label')
+    numerical_input_layers = {
+       feature_column.name: tf.keras.layers.Input(name=feature_column.name, shape=(1,), dtype=tf.float32)
+       for feature_column in numeric_feature_columns
+    }
+    categorical_feature_columns = list(create_categorical_feature_column(categorical_vocabulary_size_dict, key) for key, _ in categorical_vocabulary_size_dict.items())
+    #print("categorical_feature_columns: " + str(categorical_feature_columns))
+    categorical_input_layers = {
+       feature_column.categorical_column.name: tf.keras.layers.Input(name=feature_column.categorical_column.name, shape=(), dtype=tf.string)
+       for feature_column in categorical_feature_columns
+    }
+    #print("categorical_input_layers: " + str(categorical_input_layers))
+    input_layers = numerical_input_layers.copy()
+    input_layers.update(categorical_input_layers)
+
+    return (input_layers, numeric_feature_columns + categorical_feature_columns)
+
+def create_keras_model_functional(categorical_vocabulary_size_dict):
+    (feature_layer_inputs, feature_columns) = create_input_layer(categorical_vocabulary_size_dict)
+    feature_layer = tf.keras.layers.DenseFeatures(feature_columns)
+    feature_layer_outputs = feature_layer(feature_layer_inputs)
+    x = tf.keras.layers.Dense(2560, activation=tf.nn.relu)(feature_layer_outputs)
+    x = tf.keras.layers.Dense(1024, activation=tf.nn.relu)(x)
+    x = tf.keras.layers.Dense(256, activation=tf.nn.relu)(x)
+    outputs = tf.keras.layers.Dense(1, activation=tf.nn.sigmoid)(x)
+    inputs=[v for v in feature_layer_inputs.values()]
+    model = tf.keras.Model(inputs=inputs, outputs=outputs)
+
+    # Compile Keras model
+    model.compile(
+      # cannot use Adagrad with mirroredstartegy https://github.com/tensorflow/tensorflow/issues/19551
+      #optimizer=tf.optimizers.Adagrad(learning_rate=0.05),
+      optimizer=tf.optimizers.SGD(learning_rate=0.05),
+      loss=tf.keras.losses.BinaryCrossentropy(),
+      metrics=['accuracy'])
+    print("model: " + str(model.summary()))
+    return model
+
+def train_keras_functional_model_to_estimator(model_dir):
+    categorical_vocabulary_size_dict = get_vocabulary_size_dict()
+    model = create_keras_model_functional(categorical_vocabulary_size_dict)
+    # tf.keras.backend.set_learning_phase(True)
     config = tf.estimator.RunConfig(
-            train_distribute=strategy,
-            eval_distribute=strategy)
+            train_distribute=tf.distribute.MirroredStrategy(),
+            eval_distribute=tf.distribute.MirroredStrategy())
+    # keras_estimator = tf.keras.estimator.model_to_estimator(
+    #     keras_model=model, config=config, model_dir=model_dir)
     keras_estimator = tf.keras.estimator.model_to_estimator(
-        keras_model=model, model_dir=model_dir, config=config)
+        keras_model=model, model_dir=model_dir)
+
+    logging.info('!!!!!!!!!!!!! training MirroredStrategy on keras_estimator !!!!!!!!!!!!!!!!!!!')
     tf.estimator.train_and_evaluate(
         keras_estimator,
-        train_spec=tf.estimator.TrainSpec(input_fn=lambda: read_bigquery('train'), max_steps=get_max_steps()),
-        eval_spec=tf.estimator.EvalSpec(input_fn=lambda: read_bigquery('test')))
+        train_spec=tf.estimator.TrainSpec(input_fn=input_fn, max_steps=5),
+        eval_spec=tf.estimator.EvalSpec(input_fn=input_fn))
 
-def train_keras_sequential(strategy, model_dir):
-  train_and_evaluate_keras_model(create_keras_model_sequential(), model_dir)
 
-def train_keras_functional(strategy, model_dir):
-  train_and_evaluate_keras_model(create_keras_model_functional(), model_dir)
+def main(argv):
+    if len(argv) < 1:
+      raise app.UsageError("Too few command-line arguments.")
 
-def train_keras_to_estimator_sequential(strategy, model_dir):
-  train_keras_functional_model_to_estimator(strategy, create_keras_model_sequential(), model_dir)
+    #tf.compat.v1.enable_eager_execution()
 
-def train_keras_to_estimator_functional(strategy, model_dir):
-  train_keras_functional_model_to_estimator(strategy, create_keras_model_functional(), model_dir)
-
-def train_estimator(strategy, model_dir):
-  logging.info('training for {} steps'.format(get_max_steps()))
-  config = tf.estimator.RunConfig(
-          train_distribute=strategy,
-          eval_distribute=strategy)
-  categorical_vocabulary_size_dict = get_vocabulary_size_dict()
-  feature_columns = create_feature_columns(categorical_vocabulary_size_dict)
-  estimator = tf.estimator.DNNClassifier(
-      optimizer=tf.optimizers.SGD(learning_rate=0.05),
-      feature_columns=feature_columns,
-      hidden_units=[2560, 1024, 256],
-      model_dir=model_dir,
-      config=config,
-      n_classes=2)
-  tf.estimator.train_and_evaluate(
-      estimator,
-      train_spec=tf.estimator.TrainSpec(input_fn=lambda: read_bigquery('train'), max_steps=get_max_steps()),
-      eval_spec=tf.estimator.EvalSpec(input_fn=lambda: read_bigquery('test')))
-
-def get_args():
-    """Define the task arguments with the default values.
-    Returns:
-        experiment parameters
-    """
-
-    args_parser = argparse.ArgumentParser()
-    # Saved model arguments
-    args_parser.add_argument(
-        '--job-dir',
-        help='folder or GCS location to write checkpoints and export models.',
-        required=True)
-
-    args_parser.add_argument(
-        '--distribution-strategy',
-        help='Distribution strategy to use.',
-        choices=DISTRIBUTION_STRATEGY_TYPE_VALUES.split(' '))
-
-    args_parser.add_argument(
-        '--training-function',
-        help='Training function.',
-        choices=TRAINING_FUNCTION_VALUES.split(' '),
-        default='train_keras_sequential')
-
-    args_parser.add_argument(
-        '--batch-size',
-        help='Batch size for each training and evaluation step.',
-        type=int,
-        default=128)
-
-    args_parser.add_argument(
-        '--dataset-size',
-        help='Size of training set (instance count)',
-        choices=['full', 'small'],
-        default='small')
-
-    args_parser.add_argument(
-        '--num-epochs',
-        help='Maximum number of training data epochs on which to train.',
-        default=2,
-        type=int,
-    )
-
-    return args_parser.parse_args()
-
-def setup_environment():
-    global TARGET
-    logging_client = google.cloud.logging.Client()
-    logging_client.setup_logging()
-    logging.getLogger().setLevel(logging.INFO)
-
-    logging.warning(os.system('env'))
-    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = GOOGLE_APPLICATION_CREDENTIALS
-    os.environ['PROJECT_ID'] = PROJECT_ID
-    logging.warning('python version: ' + str(sys.version))
-    logging.warning(os.system('pip list'))
-
-    TF_CONFIG = os.environ.get('TF_CONFIG')
-    if (not os.environ.get('CLOUDSDK_METRICS_COMMAND_NAME') or os.environ.get('CLOUDSDK_METRICS_COMMAND_NAME') == 'gcloud.ai-platform.local.train'):
-      TARGET = TARGET_TYPE.local
-      logging.warning('training locally')
-      if TF_CONFIG:
-        logging.warning('removing TF_CONFIG')
-        os.environ.pop('TF_CONFIG')
-    else:
-      TARGET = TARGET_TYPE.cloud
-      logging.warning('training in cloud')
-      os.system('gsutil cp gs://alekseyv-scalableai-dev-private-bucket/criteo/alekseyv-scalableai-dev-077efe757ef6.json .')
-      os.environ[ "GOOGLE_APPLICATION_CREDENTIALS"] = os.getcwd() + '/' + GOOGLE_APPLICATION_CREDENTIALS
-      if TF_CONFIG and '"master"' in TF_CONFIG:
-        logging.warning('TF_CONFIG before modification:' + str(os.environ['TF_CONFIG']))
-        os.environ['TF_CONFIG'] = TF_CONFIG.replace('"master"', '"chief"')
-
-    if TF_CONFIG:
-      logging.warning('TF_CONFIG:' + str(TF_CONFIG))
-
-def main():
-    global BATCH_SIZE
-    global EPOCHS
-    global DATASET_SIZE
-    global TARGET
-
-    args = get_args()
-    setup_environment()
-
-    model_dir = args.job_dir
-    if TARGET == TARGET_TYPE.cloud and os.environ.get('HOSTNAME'):
-      model_dir = os.path.join(model_dir, os.environ.get('HOSTNAME'))
-    model_dir = os.path.join(model_dir, args.training_function, 'model.joblib')
+    model_dir = os.path.join(sys.argv[1], 'model.joblib')
     logging.info('Model will be saved to "%s..."', model_dir)
 
-    training_function = getattr(sys.modules[__name__], args.training_function)
-    logging.info('training_function: ' + str(training_function))
+    # #tf.debugging.set_log_device_placement(True)
+    # print("tf.config.experimental.list_logical_devices(GPU): " + str(tf.config.experimental.list_logical_devices('GPU')))
+    # print("tf.config.experimental.list_physical_devices(GPU): " + str(tf.config.experimental.list_physical_devices('GPU')))
+    # print("device_lib.list_local_devices(): " + str(device_lib.list_local_devices()))
+    # print("tf.test.is_gpu_available(): " + str(tf.test.is_gpu_available()))
 
-    distribution_strategy = None
-    if args.distribution_strategy:
-      distribution_strategy = eval(args.distribution_strategy)()
-    logging.info('distribution_strategy: ' + str(type(distribution_strategy)))
+    dataset = read_bigquery('days').take(10)
+    row_index = 0
+    for row in dataset.prefetch(10):
+      print("row %d: %s" % (row_index, row))
+      row_index += 1
 
-    BATCH_SIZE = args.batch_size
-    EPOCHS = args.num_epochs
-    DATASET_SIZE = args.dataset_size
+    #model = train_keras_model(model_dir)
+    #evaluate_keras_model(model)
+    #train_keras_functional_model_to_estimator(model_dir)
 
+    logging.warn('>>>>>>>>>>>>>>>>> training using DNNClassifier <<<<<<<<<<<<<<<<<<<')
+    categorical_vocabulary_size_dict = get_vocabulary_size_dict()
+    feature_columns = create_feature_columns(categorical_vocabulary_size_dict)
 
-    if not args.distribution_strategy:
-      training_function(None, model_dir)
-    else:
-      distribution_strategy = eval(args.distribution_strategy)()
-      if not 'estimator' in args.training_function:
-        training_function(distribution_strategy, model_dir)
-      else:
-        with distribution_strategy.scope():
-          training_function(distribution_strategy, model_dir)
+    config = tf.estimator.RunConfig(
+        train_distribute=tf.distribute.MirroredStrategy(),
+        eval_distribute=tf.distribute.MirroredStrategy())
+
+    estimator = tf.estimator.DNNClassifier(
+        optimizer=tf.optimizers.SGD(learning_rate=0.05),
+        feature_columns=feature_columns,
+        hidden_units=[2560, 1024, 256],
+        model_dir=model_dir,
+        n_classes=2,
+        config=config)
+
+    tf.estimator.train_and_evaluate(
+        estimator,
+        train_spec=tf.estimator.TrainSpec(input_fn=input_fn, max_steps=2),
+        eval_spec=tf.estimator.EvalSpec(input_fn=input_fn))
+
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!
+#TODO: make all run options keras/func keras/keras to est; and distrib stratey configurable
+# !!!!!!!!!!!!!!!!!!!!!!!!
 
 if __name__ == '__main__':
-    main()
+  logging_client = google.cloud.logging.Client()
+  logging_client.setup_logging()
+  logging.getLogger().setLevel(logging.INFO)
+  logging.warning('>>>>>>>>>>>>>>>>>>>>>>>>>> app started logging <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<')
+  logging.warning(os.system('env'))
+  os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = GOOGLE_APPLICATION_CREDENTIALS
+  os.environ['PROJECT_ID'] = PROJECT_ID
+  logging.warning('python version: ' + str(sys.version))
+  logging.warning(os.system('pip list'))
+  #print(os.system('pwd'))
+  #print(os.system('ls -al'))
+  if (os.environ.get('CLOUDSDK_METRICS_COMMAND_NAME') == 'gcloud.ai-platform.local.train'):
+    TARGET = TARGET_TYPE.local
+    logging.warning('training locally')
+    logging.warning('removing TF_CONFIG')
+    os.environ.pop('TF_CONFIG')
+  else:
+    TARGET = TARGET_TYPE.cloud
+    logging.warning('training in cloud')
+    os.system('gsutil cp gs://alekseyv-scalableai-dev-private-bucket/criteo/alekseyv-scalableai-dev-077efe757ef6.json .')
+    os.environ[ "GOOGLE_APPLICATION_CREDENTIALS"] = os.getcwd() + '/' + GOOGLE_APPLICATION_CREDENTIALS
+    #os.system('gsutil cp gs://alekseyv-scalableai-dev-private-bucket/criteo/tensorflow_io-0.10.0-cp27-cp27mu-manylinux2010_x86_64.wh .')
+    #os.system('pip install --no-deps tensorflow_io-0.10.0-cp27-cp27mu-manylinux2010_x86_64.whl')
 
+  TF_CONFIG = os.environ.get('TF_CONFIG')
+  # if TF_CONFIG and '"master"' in TF_CONFIG:
+  #   logging.warning('TF_CONFIG before modification:' + str(os.environ['TF_CONFIG']))
+  #   os.environ['TF_CONFIG'] = TF_CONFIG.replace('"master"', '"chief"')
 
-#TODO: add ability to read data from GCS
-#TODO: add custom training loop examples
-#TODO: try tensorflow-mkl for faster training???
-#TODO: add TPU???
+  if TF_CONFIG:
+    logging.warning('TF_CONFIG:' + str(TF_CONFIG))
+  logging.warning(os.system('cat ${GOOGLE_APPLICATION_CREDENTIALS}'))
+  app.run(main)
+
 
