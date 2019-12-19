@@ -30,7 +30,7 @@ docker push $IMAGE_URI
 # This is the common setup.
 echo "Submitting an AI Platform job..."
 
-TIER="BASIC" # BASIC | BASIC_GPU | STANDARD_1 | PREMIUM_1
+TIER="CUSTOM" # BASIC | BASIC_GPU | STANDARD_1 | PREMIUM_1
 
 export BUCKET_NAME="alekseyv-scalableai-dev-criteo-model-bucket"
 export REGION="us-central1"
@@ -47,18 +47,48 @@ CURRENT_DATE=`date +%Y%m%d_%H%M%S`
 JOB_NAME=train_${MODEL_NAME}_${CURRENT_DATE}
 IMAGE_URI=gcr.io/alekseyv-scalableai-dev/alekseyv_criteo_custom_container:v1
 
+for i in "$@"
+do
+case $i in
+    --distribution-strategy=*)
+    DISTRIBUTION_STRATEGY="${i#*=}"
+            # unknown option
+    ;;
+esac
+done
+
+echo DISTRIBUTION_STRATEGY = ${DISTRIBUTION_STRATEGY}
+echo 'DISTRIBUTION_STRATEGY:'
+echo ${DISTRIBUTION_STRATEGY}
+
+
+case "${DISTRIBUTION_STRATEGY}" in
+  "tf.distribute.MirroredStrategy" | "tf.distribute.experimental.CentralStorageStrategy")
+   CONFIG="--master-accelerator=count=2,type=nvidia-tesla-k80"
+   ;;
+  "tf.distribute.experimental.ParameterServerStrategy")
+   CONFIG="--parameter-server-count=1 --parameter-server-image-uri=${IMAGE_URI} --parameter-server-machine-type=n1-highcpu-16 --worker-count=2 --worker-machine-type=n1-highcpu-16 --worker-image-uri=${IMAGE_URI}"
+   ;;
+  "tf.distribute.experimental.MultiWorkerMirroredStrategy")
+   CONFIG="--worker-image-uri=${IMAGE_URI} --worker-machine-type=n1-highcpu-16 --worker-count=2 --worker-accelerator=count=2,type=nvidia-tesla-k80"
+   ;;
+  *)
+    echo "Invalid option ${DISTRIBUTION_STRATEGY}"
+    ;;
+esac
+
+echo CONFIG = ${CONFIG}
+echo 'CONFIG:'
+echo ${CONFIG}
+
+# see https://cloud.google.com/sdk/gcloud/reference/ai-platform/jobs/submit/training
 gcloud ai-platform jobs submit training ${JOB_NAME} \
         --config=${PWD}/scripts/config_fix.yaml \
+        --scale-tier=CUSTOM \
         --region=${REGION} \
-        --master-image-uri ${IMAGE_URI} \
-        --worker-image-uri ${IMAGE_URI} \
+        --master-image-uri=${IMAGE_URI} \
+        --master-machine-type=n1-highcpu-16 \
         --stream-logs \
-        -- python trainer/trainer.py ${MODEL_DIR}
+        ${CONFIG} \
+        -- python trainer/trainer.py --job-dir=${MODEL_DIR} --train-location=cloud $@
 
-
-set -
-
-#--python-version=${PYTHON_VERSION} \
-# Notes:
-# use --packages instead of --package-path if gcs location
-# add --reuse-job-dir to resume training

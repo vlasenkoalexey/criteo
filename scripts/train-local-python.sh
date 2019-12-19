@@ -17,21 +17,8 @@
 
 set -v
 
-# This has to be run after train-cloud.sh is successfully executed
+echo "Training local ML model"
 
-export MODEL_VERSION=v1
+export GOOGLE_APPLICATION_CREDENTIALS="${PWD}/alekseyv-scalableai-dev-077efe757ef6.json"
 
-FRAMEWORK=TENSORFLOW
-
-echo "First, creating the model resource..."
-gcloud ai-platform models create ${MODEL_NAME} --regions=${REGION}
-
-echo "Second, creating the model version..."
-gcloud ai-platform versions create ${MODEL_VERSION} \
-  --model ${MODEL_NAME} \
-  --origin ${MODEL_DIR} \
-  --framework ${FRAMEWORK} \
-  --runtime-version=${RUNTIME_VERSION} \
-  --python-version=${PYTHON_VERSION}
-
-set -
+python trainer/trainer.py --job-dir=model

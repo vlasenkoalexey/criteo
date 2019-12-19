@@ -49,8 +49,9 @@ EPOCHS = 5
 FULL_TRAIN_DATASET_SIZE = 36670642 # select count(1) from `alekseyv-scalableai-dev.criteo_kaggle.train`
 SMALL_TRAIN_DATASET_SIZE = 366715  # select count(1) from `alekseyv-scalableai-dev.criteo_kaggle.train_small`
 
-TARGET_TYPE = Enum('TARGET_TYPE', 'local cloud')
-TARGET = TARGET_TYPE.local
+TRAIN_LOCATION_TYPE_VALUES = 'local cloud'
+TRAIN_LOCATION_TYPE = Enum('TRAIN_LOCATION_TYPE', TRAIN_LOCATION_TYPE_VALUES)
+TRAIN_LOCATION = TRAIN_LOCATION_TYPE.local
 
 # https://www.tensorflow.org/guide/distributed_training
 DISTRIBUTION_STRATEGY_TYPE_VALUES = 'tf.distribute.MirroredStrategy tf.distribute.experimental.ParameterServerStrategy ' \
@@ -59,6 +60,9 @@ TRAINING_FUNCTION_VALUES = 'train_keras_sequential train_keras_functional train_
 
 DATASET_SIZE_TYPE = Enum('DATASET_SIZE_TYPE', 'full small')
 DATASET_SIZE = DATASET_SIZE_TYPE.small
+
+DATASET_SOURCE_TYPE = Enum('DATASET_SOURCE_TYPE', 'bq gcs')
+DATASET_SOURCE = DATASET_SOURCE_TYPE.bq
 
 CSV_SCHEMA = [
       bigquery.SchemaField("label", "INTEGER", mode='REQUIRED'),
@@ -175,23 +179,23 @@ def get_mean_and_std_dicts():
   std_dict = dict((field[0].replace('std_', ''), df[field[0]][0]) for field in df.items() if field[0].startswith('std'))
   return (mean_dict, std_dict)
 
-def transofrom_row(row_dict, mean_dict, std_dict):
-  dict_without_label = row_dict.copy()
+def transform_row(row_dict, mean_dict, std_dict):
+  #dict_without_label = row_dict.copy() - OrderedDict.copy does not work in AutoGraph
+  dict_without_label = dict(row_dict)
   label = dict_without_label.pop('label')
   for field in CSV_SCHEMA:
     if (field.name.startswith('int')):
-        if dict_without_label[field.name] == 0:
+        if dict_without_label[field.name] != 0:
             value = float(dict_without_label[field.name])
             dict_without_label[field.name] = (value - mean_dict[field.name]) / std_dict[field.name]
         else:
             dict_without_label[field.name] = 0.0 # don't use normalized 0 value for nulls
-
-  dict_with_esitmator_keys = { k:v for k,v in dict_without_label.items() }
-  return (dict_with_esitmator_keys, label)
+  return (dict_without_label, label)
 
 def read_bigquery(table_name):
   if DATASET_SIZE == DATASET_SIZE_TYPE.small:
     table_name += '_small'
+
   (mean_dict, std_dict) = get_mean_and_std_dicts()
   requested_streams_count = 10
   tensorflow_io_bigquery_client = BigQueryClient()
@@ -214,10 +218,10 @@ def read_bigquery(table_name):
             cycle_length=streams_count64,
             num_parallel_calls=streams_count64)
 
-  transformed_ds = dataset.map (lambda row: transofrom_row(row, mean_dict, std_dict), num_parallel_calls=streams_count) \
+  transformed_ds = dataset.map (lambda row: transform_row(row, mean_dict, std_dict), num_parallel_calls=streams_count) \
     .shuffle(10000) \
     .batch(BATCH_SIZE) \
-    .prefetch(100) \
+    .prefetch(100)
 
   # TODO: enable once tf.data.experimental.AutoShardPolicy.OFF is available
   # Interleave dataset is not shardable, turning off sharding
@@ -227,6 +231,33 @@ def read_bigquery(table_name):
   #  options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.OFF
   # return transformed_ds.with_options(options)
   return transformed_ds
+
+def transofrom_row_gcs(row_tuple, mean_dict, std_dict):
+    row_dict = dict(zip(list(field.name for field in CSV_SCHEMA) + ['row_hash'], list(row_tuple)))
+    row_dict.pop('row_hash')
+    return transform_row(row_dict, mean_dict, std_dict)
+
+def read_gcs(table_name):
+  if DATASET_SIZE == DATASET_SIZE_TYPE.small:
+    table_name += '_small'
+
+  gcs_filename_glob = 'gs://alekseyv-scalableai-dev-public-bucket/criteo_kaggle_from_bq/{}.csv'.format(table_name)
+  record_defaults = list(tf.int32 if field.name == 'label' else tf.constant(0, dtype=tf.int32) if field.name.startswith('int') else tf.constant('', dtype=tf.string) for field in CSV_SCHEMA) + [tf.string]
+  dataset = tf.data.experimental.CsvDataset(
+      gcs_filename_glob,
+      record_defaults,
+      field_delim='\t',
+      header=False)
+  (mean_dict, std_dict) = get_mean_and_std_dicts()
+  transformed_ds = dataset.map (lambda *row_tuple: transofrom_row_gcs(row_tuple, mean_dict, std_dict)) \
+    .shuffle(10000) \
+    .batch(BATCH_SIZE) \
+    .prefetch(100)
+  return transformed_ds
+
+def get_dataset(table_name):
+  global DATASET_SOURCE
+  return read_gcs(table_name) if DATASET_SOURCE == DATASET_SOURCE_TYPE.gcs else read_bigquery(table_name)
 
 def get_max_steps():
   dataset_size = FULL_TRAIN_DATASET_SIZE if DATASET_SIZE == DATASET_SIZE_TYPE.full else SMALL_TRAIN_DATASET_SIZE
@@ -317,8 +348,8 @@ def create_keras_model_sequential():
 
 def train_and_evaluate_keras_model(model, model_dir):
   dataset_size = FULL_TRAIN_DATASET_SIZE if DATASET_SIZE == DATASET_SIZE_TYPE.full else SMALL_TRAIN_DATASET_SIZE
-  logging.info('training datset size: '.format(dataset_size))
-  training_ds = read_bigquery('train')
+  logging.info('training datset size: {}'.format(dataset_size))
+  training_ds = get_dataset('train')
 
   log_dir= os.path.join(model_dir, "logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
   tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, embeddings_freq=1, profile_batch=0)
@@ -329,9 +360,9 @@ def train_and_evaluate_keras_model(model, model_dir):
   checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
   # crashing https://github.com/tensorflow/tensorflow/issues/27688
   checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoints_file_path, verbose=1, mode='max')
-  fit_verbosity = 1 if TARGET == TARGET_TYPE.local else 2
+  fit_verbosity = 1 if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.local else 2
   model.fit(training_ds, epochs=EPOCHS, verbose=fit_verbosity, callbacks=[tensorboard_callback, checkpoint_callback])
-  eval_ds = read_bigquery('test')
+  eval_ds = get_dataset('test')
   loss, accuracy = model.evaluate(eval_ds)
   logging.info("Eval - Loss: {}, Accuracy: {}".format(loss, accuracy))
 
@@ -344,8 +375,8 @@ def train_keras_functional_model_to_estimator(strategy, model, model_dir):
         keras_model=model, model_dir=model_dir, config=config)
     tf.estimator.train_and_evaluate(
         keras_estimator,
-        train_spec=tf.estimator.TrainSpec(input_fn=lambda: read_bigquery('train'), max_steps=get_max_steps()),
-        eval_spec=tf.estimator.EvalSpec(input_fn=lambda: read_bigquery('test')))
+        train_spec=tf.estimator.TrainSpec(input_fn=lambda: get_dataset('train'), max_steps=get_max_steps()),
+        eval_spec=tf.estimator.EvalSpec(input_fn=lambda: get_dataset('test')))
 
 def train_keras_sequential(strategy, model_dir):
   train_and_evaluate_keras_model(create_keras_model_sequential(), model_dir)
@@ -375,8 +406,8 @@ def train_estimator(strategy, model_dir):
       n_classes=2)
   tf.estimator.train_and_evaluate(
       estimator,
-      train_spec=tf.estimator.TrainSpec(input_fn=lambda: read_bigquery('train'), max_steps=get_max_steps()),
-      eval_spec=tf.estimator.EvalSpec(input_fn=lambda: read_bigquery('test')))
+      train_spec=tf.estimator.TrainSpec(input_fn=lambda: get_dataset('train'), max_steps=get_max_steps()),
+      eval_spec=tf.estimator.EvalSpec(input_fn=lambda: get_dataset('test')))
 
 def get_args():
     """Define the task arguments with the default values.
@@ -385,7 +416,12 @@ def get_args():
     """
 
     args_parser = argparse.ArgumentParser()
-    # Saved model arguments
+    args_parser.add_argument(
+        '--train-location',
+        help='where to train model - locally or in the cloud',
+        choices=TRAIN_LOCATION_TYPE_VALUES.split(' '),
+        default='local')
+
     args_parser.add_argument(
         '--job-dir',
         help='folder or GCS location to write checkpoints and export models.',
@@ -410,9 +446,15 @@ def get_args():
 
     args_parser.add_argument(
         '--dataset-size',
-        help='Size of training set (instance count)',
+        help='Size of training set',
         choices=['full', 'small'],
         default='small')
+
+    args_parser.add_argument(
+        '--dataset-source',
+        help='Dataset source.',
+        choices=['bq', 'gcs'],
+        default='bq')
 
     args_parser.add_argument(
         '--num-epochs',
@@ -424,47 +466,62 @@ def get_args():
     return args_parser.parse_args()
 
 def setup_environment():
-    global TARGET
-    logging_client = google.cloud.logging.Client()
-    logging_client.setup_logging()
-    logging.getLogger().setLevel(logging.INFO)
+  global TRAIN_LOCATION
+  #logging.warning(os.system('pip list'))
+  #logging.warning(os.system('env'))
+  #logging.warning('python version: ' + str(sys.version))
+  os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = GOOGLE_APPLICATION_CREDENTIALS
+  os.environ['PROJECT_ID'] = PROJECT_ID
 
-    logging.warning(os.system('env'))
-    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = GOOGLE_APPLICATION_CREDENTIALS
-    os.environ['PROJECT_ID'] = PROJECT_ID
-    logging.warning('python version: ' + str(sys.version))
-    logging.warning(os.system('pip list'))
-
-    TF_CONFIG = os.environ.get('TF_CONFIG')
-    if (not os.environ.get('CLOUDSDK_METRICS_COMMAND_NAME') or os.environ.get('CLOUDSDK_METRICS_COMMAND_NAME') == 'gcloud.ai-platform.local.train'):
-      TARGET = TARGET_TYPE.local
-      logging.warning('training locally')
-      if TF_CONFIG:
-        logging.warning('removing TF_CONFIG')
-        os.environ.pop('TF_CONFIG')
-    else:
-      TARGET = TARGET_TYPE.cloud
-      logging.warning('training in cloud')
-      os.system('gsutil cp gs://alekseyv-scalableai-dev-private-bucket/criteo/alekseyv-scalableai-dev-077efe757ef6.json .')
-      os.environ[ "GOOGLE_APPLICATION_CREDENTIALS"] = os.getcwd() + '/' + GOOGLE_APPLICATION_CREDENTIALS
-      if TF_CONFIG and '"master"' in TF_CONFIG:
-        logging.warning('TF_CONFIG before modification:' + str(os.environ['TF_CONFIG']))
-        os.environ['TF_CONFIG'] = TF_CONFIG.replace('"master"', '"chief"')
-
+  TF_CONFIG = os.environ.get('TF_CONFIG')
+  if (TRAIN_LOCATION == TRAIN_LOCATION_TYPE.local):
+    # see https://stackoverflow.com/questions/58868459/tensorflow-assertionerror-on-fit-method
+    logging.warning('training locally')
     if TF_CONFIG:
-      logging.warning('TF_CONFIG:' + str(TF_CONFIG))
+      logging.warning('removing TF_CONFIG')
+      os.environ.pop('TF_CONFIG')
+  else:
+    logging.warning('training in cloud')
+    os.system('gsutil cp gs://alekseyv-scalableai-dev-private-bucket/criteo/alekseyv-scalableai-dev-077efe757ef6.json .')
+    os.environ[ "GOOGLE_APPLICATION_CREDENTIALS"] = os.getcwd() + '/' + GOOGLE_APPLICATION_CREDENTIALS
+    if TF_CONFIG and '"master"' in TF_CONFIG:
+      logging.warning('TF_CONFIG before modification:' + str(os.environ['TF_CONFIG']))
+      os.environ['TF_CONFIG'] = TF_CONFIG.replace('"master"', '"chief"')
+
+  if TF_CONFIG:
+    logging.warning('TF_CONFIG:' + str(TF_CONFIG))
 
 def main():
     global BATCH_SIZE
     global EPOCHS
+    global TRAIN_LOCATION
+    global DATASET_SOURCE
     global DATASET_SIZE
-    global TARGET
 
     args = get_args()
-    setup_environment()
+    # https://github.com/tensorflow/tensorflow/issues/34568
+    # https://www.tensorflow.org/tutorials/distribute/multi_worker_with_keras#train_the_model_with_multiworkermirroredstrategy
+    # Currently there is a limitation in MultiWorkerMirroredStrategy where TensorFlow ops need to be created after the instance of strategy is created.
+    distribution_strategy = None
+    if args.distribution_strategy:
+        distribution_strategy = eval(args.distribution_strategy)()
+
+    logging_client = google.cloud.logging.Client()
+    logging_client.setup_logging()
+    logging.getLogger().setLevel(logging.INFO)
+    logging.info('trainer arguments: ' + str(args))
+
+    TRAIN_LOCATION = TRAIN_LOCATION_TYPE[args.train_location]
+    logging.info('train_location: ' + str(TRAIN_LOCATION))
+    DATASET_SOURCE = DATASET_SOURCE_TYPE[args.dataset_source]
+    logging.info('dataset_source: ' + str(DATASET_SOURCE))
+    DATASET_SIZE = DATASET_SIZE_TYPE[args.dataset_size]
+    logging.info('dataset_size: ' + str(DATASET_SIZE))
+
+    logging.info('distribution_strategy: ' + str(type(distribution_strategy)))
 
     model_dir = args.job_dir
-    if TARGET == TARGET_TYPE.cloud and os.environ.get('HOSTNAME'):
+    if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.cloud and os.environ.get('HOSTNAME'):
       model_dir = os.path.join(model_dir, os.environ.get('HOSTNAME'))
     model_dir = os.path.join(model_dir, args.training_function, 'model.joblib')
     logging.info('Model will be saved to "%s..."', model_dir)
@@ -472,31 +529,28 @@ def main():
     training_function = getattr(sys.modules[__name__], args.training_function)
     logging.info('training_function: ' + str(training_function))
 
-    distribution_strategy = None
-    if args.distribution_strategy:
-      distribution_strategy = eval(args.distribution_strategy)()
-    logging.info('distribution_strategy: ' + str(type(distribution_strategy)))
-
     BATCH_SIZE = args.batch_size
     EPOCHS = args.num_epochs
-    DATASET_SIZE = args.dataset_size
 
+    setup_environment()
 
     if not args.distribution_strategy:
+      logging.info('no distribution_strategy')
       training_function(None, model_dir)
     else:
-      distribution_strategy = eval(args.distribution_strategy)()
-      if not 'estimator' in args.training_function:
+      if 'estimator' in args.training_function:
+        logging.info('args.training_function:' + args.training_function)
+        logging.info('distribution_strategy not in scope: ' + str(type(distribution_strategy)))
         training_function(distribution_strategy, model_dir)
       else:
         with distribution_strategy.scope():
+          logging.info('distribution_strategy in scope: ' + str(type(distribution_strategy)))
           training_function(distribution_strategy, model_dir)
 
 if __name__ == '__main__':
     main()
 
-
-#TODO: add ability to read data from GCS
+#TODO: make it easy to reporoduce - replace project and json file
 #TODO: add custom training loop examples
 #TODO: try tensorflow-mkl for faster training???
 #TODO: add TPU???

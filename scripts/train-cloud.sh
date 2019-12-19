@@ -47,12 +47,7 @@ gcloud ai-platform jobs submit training ${JOB_NAME} \
         --package-path=${PACKAGE_PATH}  \
         --stream-logs \
         -- \
-	    ${MODEL_DIR}
+	--job-dir=${MODEL_DIR} --train-location=cloud $@
 
 set -
 
-#        --scale-tier=${TIER} \
-#--python-version=${PYTHON_VERSION} \
-# Notes:
-# use --packages instead of --package-path if gcs location
-# add --reuse-job-dir to resume training
