@@ -17,14 +17,9 @@
 
 set -v
 
-# This is the common setup.
-echo "Submitting an AI Platform job..."
-
-TIER="CUSTOM" # BASIC | BASIC_GPU | STANDARD_1 | PREMIUM_1
-
 export BUCKET_NAME="alekseyv-scalableai-dev-criteo-model-bucket"
 export REGION="us-central1"
-export MODEL_NAME="criteo_kaggle_esitmator" # change to your model name
+export MODEL_NAME="criteo_kaggle_model" # change to your model name
 export PYTHON_VERSION="3.7"
 export RUNTIME_VERSION="1.14"
 
@@ -38,16 +33,53 @@ gsutil cp alekseyv-scalableai-dev-077efe757ef6.json gs://alekseyv-scalableai-dev
 CURRENT_DATE=`date +%Y%m%d_%H%M%S`
 JOB_NAME=train_${MODEL_NAME}_${CURRENT_DATE}
 
+for i in "$@"
+do
+case $i in
+    --distribution-strategy=*)
+    DISTRIBUTION_STRATEGY="${i#*=}"
+            # unknown option
+    ;;
+esac
+done
+
+echo DISTRIBUTION_STRATEGY = ${DISTRIBUTION_STRATEGY}
+echo 'DISTRIBUTION_STRATEGY:'
+echo ${DISTRIBUTION_STRATEGY}
+
+
+case "${DISTRIBUTION_STRATEGY}" in
+  "tf.distribute.MirroredStrategy" | "tf.distribute.experimental.CentralStorageStrategy")
+   CONFIG="--master-accelerator=count=2,type=nvidia-tesla-k80"
+   ;;
+  "tf.distribute.experimental.ParameterServerStrategy")
+   CONFIG="--parameter-server-count=1 --parameter-server-image-uri=${IMAGE_URI} --parameter-server-machine-type=n1-highcpu-16 --worker-count=2 --worker-machine-type=n1-highcpu-16 --worker-image-uri=${IMAGE_URI}"
+   ;;
+  "tf.distribute.experimental.MultiWorkerMirroredStrategy")
+   CONFIG="--worker-image-uri=${IMAGE_URI} --worker-machine-type=n1-highcpu-16 --worker-count=2 --worker-accelerator=count=2,type=nvidia-tesla-k80"
+   ;;
+  *)
+    echo "Invalid option ${DISTRIBUTION_STRATEGY}"
+    ;;
+esac
+
+echo CONFIG = ${CONFIG}
+echo 'CONFIG:'
+echo ${CONFIG}
+
+echo "Submitting an AI Platform job..."
+# see https://cloud.google.com/sdk/gcloud/reference/ai-platform/jobs/submit/training
 gcloud ai-platform jobs submit training ${JOB_NAME} \
         --config=${PWD}/scripts/config_fix.yaml \
+        --scale-tier=CUSTOM \
         --job-dir=${MODEL_DIR} \
         --runtime-version=${RUNTIME_VERSION} \
         --region=${REGION} \
         --module-name=trainer.trainer \
         --package-path=${PACKAGE_PATH}  \
+         --master-machine-type=n1-highcpu-16 \
         --stream-logs \
+        ${CONFIG} \
         -- \
-	--job-dir=${MODEL_DIR} --train-location=cloud $@
-
-set -
+        --job-dir=${MODEL_DIR} --train-location=cloud $@
 

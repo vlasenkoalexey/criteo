@@ -17,8 +17,6 @@
 
 set -v
 
-gcloud config configurations activate alekseyv-scalableai-dev
-
 echo "Rebuilding docker image..."
 export PROJECT_ID=alekseyv-scalableai-dev
 export IMAGE_REPO_NAME=alekseyv_criteo_custom_container
@@ -27,10 +25,6 @@ export IMAGE_URI=gcr.io/$PROJECT_ID/$IMAGE_REPO_NAME:$IMAGE_TAG
 docker build -f Dockerfile -t $IMAGE_URI ./
 docker push $IMAGE_URI
 
-# This is the common setup.
-echo "Submitting an AI Platform job..."
-
-TIER="CUSTOM" # BASIC | BASIC_GPU | STANDARD_1 | PREMIUM_1
 
 export BUCKET_NAME="alekseyv-scalableai-dev-criteo-model-bucket"
 export REGION="us-central1"
@@ -81,6 +75,7 @@ echo CONFIG = ${CONFIG}
 echo 'CONFIG:'
 echo ${CONFIG}
 
+echo "Submitting an AI Platform job..."
 # see https://cloud.google.com/sdk/gcloud/reference/ai-platform/jobs/submit/training
 gcloud ai-platform jobs submit training ${JOB_NAME} \
         --config=${PWD}/scripts/config_fix.yaml \

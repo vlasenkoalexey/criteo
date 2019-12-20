@@ -1,26 +1,6 @@
-# A short End-to-End Tutorial for AI Platform
+# Distributed training for Criteo dataset on GCP using BigQuery reader
 
 ## Overview
-
-If this is your first time using [AI Platform](https://cloud.google.com/ml-engine/docs/),
-we suggest you take a look at the [Introduction to AI Platform](https://cloud.google.com/ml-engine/docs/technical-overview) docs to have an understanding of the platform.
-
-In this short tutorial, we will go over the basic steps for training a model
-on AI Platform and using it for making predictions. We highly recommend that 
-you go through this tutorial carefully as it illustrates many important steps which 
-are essential in any training and/or prediction tasks on AI Platform.
-
-In this tutorial, we will train a simple linear regression model with scikit-learn
-using a dummy data. We will then deploy it to AI Platform and use it to make some
-predictions. Finally we will delete the model from AI Platform and release all the used resources.
-
-## Prerequisites
-
-* Follow the instructions in the [setup](../setup) directory in order to setup your environment
-* Create a Python 3 virtual environment and activate it
-* Change the directory to this sample and run `python setup.py install`. Note: This 
-is mostly for local testing of your code. When you submit a training job, no code will be
-executed on your local machine. 
 
 ## Sample Structure
 
@@ -44,38 +24,13 @@ executed on your local machine.
 
 ## Running the Sample
 
-After you go over the steps in the prerequisites section, you are ready to run this sample.
-Here are the steps you need to take:
-
-1. _[Optional]_ Train the model locally. Run `source ./scripts/train-local.sh` as many times as
-you like (This has no effect on your cloud usage). If successful, this script should
-create a new model as `trained/quickstart/model.joblib`, which means you may now submit a
-training job to AI Platform.
-
-2. Submit a training job to AI Platform. Run `source ./scripts/train-cloud.sh` This will create a 
-training job on AI Platform and displays some instructions on how to track the job progress.
-At the end of a successful training job, it will upload the trained model object to a GCS
-bucket and sets `$MODEL_DIR` environment variable to the directory containing the model.
-
-3. Once the model object is created, you can deploy it for prediction. For that,
-you'll need to create a model resource, and also a model version. A model resource is
-like a container for one or more model versions. Run `source ./scripts/deploy.sh` which 
-creates both the model resource and then the model version. _Note:_ If either the model
-resource or the model version already exists, the script will display an error message.
-
-4. Once the model is deployed, you may use it to make predictions. Simple, run 
-`python ./prediction/predict.py`. This sample code sends a prediction request for two 
-instances and prints the result to the console.
-
-5. You may want to delete the resources you created in this tutorial. For that, simply 
-run `source ./scripts/cleanup.sh` which deletes the model version and resouce, and also
-the model object from GCS.
+TODO: update
 
 ## Explaining Key Elements
 
 In this section, we'll highlight the main elements of this sample.
 
-### [task.py](./trainer/task.py)
+### [task.py](./trainer/trainer.py)
 
 In this sample we are not passing the input dataset as a parameter. However, we need
 to save the trained model. To keep things simple, the code expects one argument
@@ -94,6 +49,7 @@ path is local or a GCS bucket.
 
 ### [train-local.sh](./scripts/train-local.sh)
 
+TODO: update
 The command to run the training job locally is this:
 
 ```bash
@@ -111,6 +67,7 @@ gcloud ai-platform local train \
 
 ### [train-cloud.sh](./scripts/train-cloud.sh)
 
+TODO: update
 To submit a training job to AI Platform, the main command is:
 
 ```bash

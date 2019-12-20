@@ -32,6 +32,7 @@ from tensorflow.python.client import device_lib
 
 from tensorflow.python.data.experimental.ops import interleave_ops
 from tensorflow.python.data.ops import dataset_ops
+from tensorflow.python.platform import gfile
 
 import google.cloud.logging
 
@@ -237,17 +238,37 @@ def transofrom_row_gcs(row_tuple, mean_dict, std_dict):
     row_dict.pop('row_hash')
     return transform_row(row_dict, mean_dict, std_dict)
 
+
+def _get_file_names(file_pattern):
+  if isinstance(file_pattern, list):
+    if not file_pattern:
+      raise ValueError("File pattern is empty.")
+    file_names = []
+    for entry in file_pattern:
+      file_names.extend(gfile.Glob(entry))
+  else:
+    file_names = list(gfile.Glob(file_pattern))
+
+  if not file_names:
+    raise ValueError("No files match %s." % file_pattern)
+  return file_names
+
 def read_gcs(table_name):
   if DATASET_SIZE == DATASET_SIZE_TYPE.small:
     table_name += '_small'
+  else:
+    table_name += '_full'
 
-  gcs_filename_glob = 'gs://alekseyv-scalableai-dev-public-bucket/criteo_kaggle_from_bq/{}.csv'.format(table_name)
+  gcs_filename_glob = 'gs://alekseyv-scalableai-dev-public-bucket/criteo_kaggle_from_bq/{}*'.format(table_name)
+  file_names = _get_file_names(gcs_filename_glob)
+  num_parallel_calls = max(10, len(file_names))
+  file_names_ds = dataset_ops.Dataset.from_tensor_slices(file_names).shuffle(buffer_size=20)
   record_defaults = list(tf.int32 if field.name == 'label' else tf.constant(0, dtype=tf.int32) if field.name.startswith('int') else tf.constant('', dtype=tf.string) for field in CSV_SCHEMA) + [tf.string]
-  dataset = tf.data.experimental.CsvDataset(
-      gcs_filename_glob,
-      record_defaults,
-      field_delim='\t',
-      header=False)
+  dataset = file_names_ds.interleave(
+          lambda file_name: tf.data.experimental.CsvDataset(file_name, record_defaults, field_delim='\t', header=False),
+          cycle_length=num_parallel_calls,
+          num_parallel_calls=num_parallel_calls)
+
   (mean_dict, std_dict) = get_mean_and_std_dicts()
   transformed_ds = dataset.map (lambda *row_tuple: transofrom_row_gcs(row_tuple, mean_dict, std_dict)) \
     .shuffle(10000) \
@@ -373,9 +394,11 @@ def train_keras_functional_model_to_estimator(strategy, model, model_dir):
             eval_distribute=strategy)
     keras_estimator = tf.keras.estimator.model_to_estimator(
         keras_model=model, model_dir=model_dir, config=config)
+    # Need to specify both max_steps and epochs. Each worker will go through epoch separately.
+    # see https://www.tensorflow.org/api_docs/python/tf/estimator/train_and_evaluate?version=stable
     tf.estimator.train_and_evaluate(
         keras_estimator,
-        train_spec=tf.estimator.TrainSpec(input_fn=lambda: get_dataset('train'), max_steps=get_max_steps()),
+        train_spec=tf.estimator.TrainSpec(input_fn=lambda: get_dataset('train').repeat(EPOCHS), max_steps=get_max_steps()),
         eval_spec=tf.estimator.EvalSpec(input_fn=lambda: get_dataset('test')))
 
 def train_keras_sequential(strategy, model_dir):
@@ -404,10 +427,14 @@ def train_estimator(strategy, model_dir):
       model_dir=model_dir,
       config=config,
       n_classes=2)
-  tf.estimator.train_and_evaluate(
+  logging.info('training estimator')
+  # Need to specify both max_steps and epochs. Each worker will go through epoch separately.
+  # see https://www.tensorflow.org/api_docs/python/tf/estimator/train_and_evaluate?version=stable
+  result = tf.estimator.train_and_evaluate(
       estimator,
-      train_spec=tf.estimator.TrainSpec(input_fn=lambda: get_dataset('train'), max_steps=get_max_steps()),
+      train_spec=tf.estimator.TrainSpec(input_fn=lambda: get_dataset('train').repeat(EPOCHS), max_steps=get_max_steps()),
       eval_spec=tf.estimator.EvalSpec(input_fn=lambda: get_dataset('test')))
+  logging.info('>>> done evaluating estimtor model: ' + str(result))
 
 def get_args():
     """Define the task arguments with the default values.
@@ -509,6 +536,10 @@ def main():
     logging_client = google.cloud.logging.Client()
     logging_client.setup_logging()
     logging.getLogger().setLevel(logging.INFO)
+    logging.info('trainer started')
+    logging.info("tf.test.is_gpu_available(): " + str(tf.test.is_gpu_available()))
+    logging.info("device_lib.list_local_devices(): " + str(device_lib.list_local_devices()))
+
     logging.info('trainer arguments: ' + str(args))
 
     TRAIN_LOCATION = TRAIN_LOCATION_TYPE[args.train_location]
@@ -550,7 +581,9 @@ def main():
 if __name__ == '__main__':
     main()
 
-#TODO: make it easy to reporoduce - replace project and json file
+#TODO: change csv reader to be able to read from multiple files
+#TODO: figure out how epoch training works in estimators, should I call repeat???
+#TODO: make it easy to reporoduce - replace project and json file, try it out on another project
 #TODO: add custom training loop examples
 #TODO: try tensorflow-mkl for faster training???
 #TODO: add TPU???
