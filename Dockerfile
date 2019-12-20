@@ -2,6 +2,7 @@
 # TODO: replace with DLVM container after new version is released
 # https://pantheon.corp.google.com/gcr/images/deeplearning-platform-release/GLOBAL/tf2-cpu
 #FROM ubuntu:cosmic
+#FROM tensorflow/tensorflow:2.0.0-gpu
 FROM tensorflow/tensorflow:2.0.0-gpu
 
 # Installs necessary dependencies.

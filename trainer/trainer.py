@@ -581,10 +581,9 @@ def main():
 if __name__ == '__main__':
     main()
 
-#TODO: change csv reader to be able to read from multiple files
-#TODO: figure out how epoch training works in estimators, should I call repeat???
+#TODO: figure out why tf.distribute.experimental.ParameterServerStrategy is failing - does not work for GPU image, try with accelerators???
 #TODO: make it easy to reporoduce - replace project and json file, try it out on another project
 #TODO: add custom training loop examples
-#TODO: try tensorflow-mkl for faster training???
+#TODO: try tensorflow-mkl for faster training - just use updated DLVM container once available
 #TODO: add TPU???
 
