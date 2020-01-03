@@ -17,9 +17,9 @@
 
 set -v
 
-export BUCKET_NAME="alekseyv-scalableai-dev-criteo-model-bucket"
+export BUCKET_NAME="alekseyv-bucket" #TODO: update with your bucket name
 export REGION="us-central1"
-export MODEL_NAME="criteo_kaggle_model" # change to your model name
+export MODEL_NAME="criteo_kaggle_model"
 export PYTHON_VERSION="3.7"
 export RUNTIME_VERSION="1.14"
 
@@ -28,7 +28,6 @@ export MODEL_DIR=gs://${BUCKET_NAME}/${MODEL_NAME}/model
 
 gsutil mb gs://${BUCKET_NAME}
 
-gsutil cp alekseyv-scalableai-dev-077efe757ef6.json gs://alekseyv-scalableai-dev-private-bucket/criteo
 
 CURRENT_DATE=`date +%Y%m%d_%H%M%S`
 JOB_NAME=train_${MODEL_NAME}_${CURRENT_DATE}

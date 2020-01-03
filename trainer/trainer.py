@@ -39,8 +39,9 @@ import google.cloud.logging
 import argparse
 
 LOCATION = 'us'
-PROJECT_ID = "alekseyv-scalableai-dev"
-GOOGLE_APPLICATION_CREDENTIALS = "alekseyv-scalableai-dev-077efe757ef6.json"
+PROJECT_ID = "alekseyv-scalableai-test" # TODO: replace with your project name
+GOOGLE_APPLICATION_CREDENTIALS = "alekseyv-scalableai-test-dd811117bada.json" # TODO: replace with your key name
+GOOGLE_APPLICATION_CREDENTIALS_GCS_BUCKET = 'gs://alekseyv-bucket/criteo' # TODO: replace with the path to the GCS bucket your project has access to
 
 DATASET_ID = 'criteo_kaggle'
 
@@ -509,11 +510,12 @@ def setup_environment():
       os.environ.pop('TF_CONFIG')
   else:
     logging.warning('training in cloud')
-    os.system('gsutil cp gs://alekseyv-scalableai-dev-private-bucket/criteo/alekseyv-scalableai-dev-077efe757ef6.json .')
+    os.system('gsutil cp {}/{} .'.format(GOOGLE_APPLICATION_CREDENTIALS_GCS_BUCKET, GOOGLE_APPLICATION_CREDENTIALS))
     os.environ[ "GOOGLE_APPLICATION_CREDENTIALS"] = os.getcwd() + '/' + GOOGLE_APPLICATION_CREDENTIALS
     if TF_CONFIG and '"master"' in TF_CONFIG:
       logging.warning('TF_CONFIG before modification:' + str(os.environ['TF_CONFIG']))
-      os.environ['TF_CONFIG'] = TF_CONFIG.replace('"master"', '"chief"')
+      TF_CONFIG = TF_CONFIG.replace('"master"', '"chief"')
+      os.environ['TF_CONFIG'] = TF_CONFIG
 
   if TF_CONFIG:
     logging.warning('TF_CONFIG:' + str(TF_CONFIG))
