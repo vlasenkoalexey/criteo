@@ -28,17 +28,14 @@ docker push $IMAGE_URI
 
 export BUCKET_NAME="alekseyv-scalableai-dev-criteo-model-bucket"
 export REGION="us-central1"
-export MODEL_NAME="criteo_kaggle_docker_estimator_1220_keras_func" # change to your model name
 
 PACKAGE_PATH=./trainer # this can be a gcs location to a zipped and uploaded package
-export MODEL_DIR=gs://${BUCKET_NAME}/${MODEL_NAME}/model
-
 gsutil mb gs://${BUCKET_NAME}
 
 #gsutil cp alekseyv-scalableai-dev-077efe757ef6.json gs://alekseyv-scalableai-dev-private-bucket/criteo
 
 CURRENT_DATE=`date +%Y%m%d_%H%M%S`
-JOB_NAME=train_${MODEL_NAME}_${CURRENT_DATE}
+MODEL_NAME=${CURRENT_DATE}
 IMAGE_URI=gcr.io/alekseyv-scalableai-dev/alekseyv_criteo_custom_container:v1
 
 for i in "$@"
@@ -46,6 +43,9 @@ do
 case $i in
     --distribution-strategy=*)
     DISTRIBUTION_STRATEGY="${i#*=}"
+    ;;
+    --model-name=*)
+    MODEL_NAME="${i#*=}"
             # unknown option
     ;;
 esac
@@ -55,6 +55,9 @@ echo DISTRIBUTION_STRATEGY = ${DISTRIBUTION_STRATEGY}
 echo 'DISTRIBUTION_STRATEGY:'
 echo ${DISTRIBUTION_STRATEGY}
 
+echo MODEL_NAME=${MODEL_NAME}
+echo 'MODEL_NAME:'
+echo ${MODEL_NAME}
 
 case "${DISTRIBUTION_STRATEGY}" in
   "tf.distribute.MirroredStrategy" | "tf.distribute.experimental.CentralStorageStrategy")
@@ -74,6 +77,9 @@ esac
 echo CONFIG = ${CONFIG}
 echo 'CONFIG:'
 echo ${CONFIG}
+
+JOB_NAME=train_${MODEL_NAME}
+export MODEL_DIR=gs://${BUCKET_NAME}/${MODEL_NAME}/model
 
 echo "Submitting an AI Platform job..."
 # see https://cloud.google.com/sdk/gcloud/reference/ai-platform/jobs/submit/training

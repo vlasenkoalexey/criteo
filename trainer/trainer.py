@@ -39,8 +39,9 @@ import google.cloud.logging
 import argparse
 
 LOCATION = 'us'
-PROJECT_ID = "alekseyv-scalableai-dev"
-GOOGLE_APPLICATION_CREDENTIALS = "alekseyv-scalableai-dev-077efe757ef6.json"
+PROJECT_ID = "alekseyv-scalableai-dev" # TODO: replace with your project name
+GOOGLE_APPLICATION_CREDENTIALS = "alekseyv-scalableai-dev-077efe757ef6.json" # TODO: replace with your key name
+GOOGLE_APPLICATION_CREDENTIALS_GCS_BUCKET = 'gs://alekseyv-scalableai-dev-private-bucket/criteo' # TODO: replace with the path to the GCS bucket your project has access to
 
 DATASET_ID = 'criteo_kaggle'
 
@@ -57,7 +58,8 @@ TRAIN_LOCATION = TRAIN_LOCATION_TYPE.local
 # https://www.tensorflow.org/guide/distributed_training
 DISTRIBUTION_STRATEGY_TYPE_VALUES = 'tf.distribute.MirroredStrategy tf.distribute.experimental.ParameterServerStrategy ' \
   'tf.distribute.experimental.MultiWorkerMirroredStrategy tf.distribute.experimental.CentralStorageStrategy'
-TRAINING_FUNCTION_VALUES = 'train_keras_sequential train_keras_functional train_keras_to_estimator_functional train_keras_to_estimator_sequential train_estimator'
+TRAINING_FUNCTION_VALUES = 'train_keras_sequential train_keras_functional train_keras_functional_wide_and_deep ' \
+  'train_keras_to_estimator_functional train_keras_to_estimator_sequential train_estimator train_estimator_wide_and_deep'
 
 DATASET_SIZE_TYPE = Enum('DATASET_SIZE_TYPE', 'full small')
 DATASET_SIZE = DATASET_SIZE_TYPE.small
@@ -300,19 +302,25 @@ def create_categorical_feature_column(categorical_vocabulary_size_dict, key):
       int(min(50, math.floor(6 * hash_bucket_size**0.25))))
   return embedding_feature_column
 
+def create_linear_feature_columns():
+  return list(tf.feature_column.numeric_column(field.name, dtype=tf.dtypes.float32)  for field in CSV_SCHEMA if field.field_type == 'INTEGER' and field.name != 'label')
+
+def create_categorical_feature_columns(categorical_vocabulary_size_dict):
+  return list(create_categorical_feature_column(categorical_vocabulary_size_dict, key) for key, _ in categorical_vocabulary_size_dict.items())
+
 def create_feature_columns(categorical_vocabulary_size_dict):
   feature_columns = []
-  feature_columns.extend(list(tf.feature_column.numeric_column(field.name, dtype=tf.dtypes.float32)  for field in CSV_SCHEMA if field.field_type == 'INTEGER' and field.name != 'label'))
-  feature_columns.extend(list(create_categorical_feature_column(categorical_vocabulary_size_dict, key) for key, _ in categorical_vocabulary_size_dict.items()))
+  feature_columns.extend(create_linear_feature_columns())
+  feature_columns.extend(create_categorical_feature_columns(categorical_vocabulary_size_dict))
   return feature_columns
 
 def create_input_layer(categorical_vocabulary_size_dict):
-    numeric_feature_columns = list(tf.feature_column.numeric_column(field.name, dtype=tf.dtypes.float32)  for field in CSV_SCHEMA if field.field_type == 'INTEGER' and field.name != 'label')
+    numeric_feature_columns = create_linear_feature_columns()
     numerical_input_layers = {
        feature_column.name: tf.keras.layers.Input(name=feature_column.name, shape=(1,), dtype=tf.float32)
        for feature_column in numeric_feature_columns
     }
-    categorical_feature_columns = list(create_categorical_feature_column(categorical_vocabulary_size_dict, key) for key, _ in categorical_vocabulary_size_dict.items())
+    categorical_feature_columns = create_categorical_feature_columns(categorical_vocabulary_size_dict)
     categorical_input_layers = {
        feature_column.categorical_column.name: tf.keras.layers.Input(name=feature_column.categorical_column.name, shape=(), dtype=tf.string)
        for feature_column in categorical_feature_columns
@@ -331,6 +339,36 @@ def create_keras_model_functional():
     x = tf.keras.layers.Dense(1024, activation=tf.nn.relu)(x)
     x = tf.keras.layers.Dense(256, activation=tf.nn.relu)(x)
     outputs = tf.keras.layers.Dense(1, activation=tf.nn.sigmoid)(x)
+    inputs=[v for v in feature_layer_inputs.values()]
+    model = tf.keras.Model(inputs=inputs, outputs=outputs)
+
+    # Compile Keras model
+    model.compile(
+      # cannot use Adagrad with mirroredstartegy https://github.com/tensorflow/tensorflow/issues/19551
+      #optimizer=tf.optimizers.Adagrad(learning_rate=0.05),
+      optimizer=tf.optimizers.SGD(learning_rate=0.05),
+      loss=tf.keras.losses.BinaryCrossentropy(),
+      metrics=['accuracy'])
+    logging.info("model: " + str(model.summary()))
+    return model
+
+def create_keras_model_functional_wide_and_deep():
+    categorical_vocabulary_size_dict = get_vocabulary_size_dict()
+    (feature_layer_inputs, feature_columns) = create_input_layer(categorical_vocabulary_size_dict)
+#    linear_feature_columns=create_linear_feature_columns()
+    categorical_feature_columns=create_categorical_feature_columns(categorical_vocabulary_size_dict)
+
+    wide = tf.keras.layers.DenseFeatures(categorical_feature_columns)(feature_layer_inputs)
+
+    deep = tf.keras.layers.DenseFeatures(feature_columns)(feature_layer_inputs)
+    deep = tf.keras.layers.Dense(2560, activation=tf.nn.relu)(deep)
+    deep = tf.keras.layers.Dense(1024, activation=tf.nn.relu)(deep)
+    deep = tf.keras.layers.Dense(256, activation=tf.nn.relu)(deep)
+
+    outputs = tf.keras.layers.Dense(1, activation='sigmoid')(
+      tf.keras.layers.concatenate([deep, wide]))
+
+    outputs = tf.squeeze(outputs, -1)
     inputs=[v for v in feature_layer_inputs.values()]
     model = tf.keras.Model(inputs=inputs, outputs=outputs)
 
@@ -407,6 +445,9 @@ def train_keras_sequential(strategy, model_dir):
 def train_keras_functional(strategy, model_dir):
   train_and_evaluate_keras_model(create_keras_model_functional(), model_dir)
 
+def train_keras_functional_wide_and_deep(strategy, model_dir):
+  train_and_evaluate_keras_model(create_keras_model_functional_wide_and_deep(), model_dir)
+
 def train_keras_to_estimator_sequential(strategy, model_dir):
   train_keras_functional_model_to_estimator(strategy, create_keras_model_sequential(), model_dir)
 
@@ -424,6 +465,32 @@ def train_estimator(strategy, model_dir):
       optimizer=tf.optimizers.SGD(learning_rate=0.05),
       feature_columns=feature_columns,
       hidden_units=[2560, 1024, 256],
+      model_dir=model_dir,
+      config=config,
+      n_classes=2)
+  logging.info('training estimator')
+  # Need to specify both max_steps and epochs. Each worker will go through epoch separately.
+  # see https://www.tensorflow.org/api_docs/python/tf/estimator/train_and_evaluate?version=stable
+  tf.estimator.train_and_evaluate(
+      estimator,
+      train_spec=tf.estimator.TrainSpec(input_fn=lambda: get_dataset('train').repeat(EPOCHS), max_steps=get_max_steps()),
+      eval_spec=tf.estimator.EvalSpec(input_fn=lambda: get_dataset('test')))
+  logging.info('>>> done evaluating estimtor model')
+
+def train_estimator_wide_and_deep(strategy, model_dir):
+  logging.info('training for {} steps'.format(get_max_steps()))
+  config = tf.estimator.RunConfig(
+          train_distribute=strategy,
+          eval_distribute=strategy)
+  categorical_vocabulary_size_dict = get_vocabulary_size_dict()
+  linear_feature_columns=create_linear_feature_columns()
+  categorical_feature_columns=create_categorical_feature_columns(categorical_vocabulary_size_dict)
+  estimator = tf.estimator.DNNLinearCombinedClassifier(
+      dnn_optimizer=tf.optimizers.SGD(learning_rate=0.05),
+      linear_optimizer=tf.optimizers.SGD(learning_rate=0.05),
+      linear_feature_columns=linear_feature_columns,
+      dnn_feature_columns=linear_feature_columns + categorical_feature_columns,
+      dnn_hidden_units=[2560, 1024, 256],
       model_dir=model_dir,
       config=config,
       n_classes=2)
@@ -448,6 +515,10 @@ def get_args():
         help='where to train model - locally or in the cloud',
         choices=TRAIN_LOCATION_TYPE_VALUES.split(' '),
         default='local')
+
+    args_parser.add_argument(
+        '--model-name',
+        help='model name, not used.')
 
     args_parser.add_argument(
         '--job-dir',
@@ -509,14 +580,16 @@ def setup_environment():
       os.environ.pop('TF_CONFIG')
   else:
     logging.warning('training in cloud')
-    os.system('gsutil cp gs://alekseyv-scalableai-dev-private-bucket/criteo/alekseyv-scalableai-dev-077efe757ef6.json .')
+    os.system('gsutil cp {}/{} .'.format(GOOGLE_APPLICATION_CREDENTIALS_GCS_BUCKET, GOOGLE_APPLICATION_CREDENTIALS))
     os.environ[ "GOOGLE_APPLICATION_CREDENTIALS"] = os.getcwd() + '/' + GOOGLE_APPLICATION_CREDENTIALS
     if TF_CONFIG and '"master"' in TF_CONFIG:
       logging.warning('TF_CONFIG before modification:' + str(os.environ['TF_CONFIG']))
-      os.environ['TF_CONFIG'] = TF_CONFIG.replace('"master"', '"chief"')
+      TF_CONFIG = TF_CONFIG.replace('"master"', '"chief"')
+      os.environ['TF_CONFIG'] = TF_CONFIG
 
   if TF_CONFIG:
     logging.warning('TF_CONFIG:' + str(TF_CONFIG))
+    logging.warning('TF_CONFIG from env:' + str(os.environ['TF_CONFIG']))
 
 def main():
     global BATCH_SIZE
@@ -581,9 +654,4 @@ def main():
 if __name__ == '__main__':
     main()
 
-#TODO: figure out why tf.distribute.experimental.ParameterServerStrategy is failing - does not work for GPU image, try with accelerators???
-#TODO: make it easy to reporoduce - replace project and json file, try it out on another project
-#TODO: add custom training loop examples
-#TODO: try tensorflow-mkl for faster training - just use updated DLVM container once available
-#TODO: add TPU???
 
