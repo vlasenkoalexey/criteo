@@ -183,7 +183,6 @@ def get_mean_and_std_dicts():
   return (mean_dict, std_dict)
 
 def transform_row(row_dict, mean_dict, std_dict):
-  #dict_without_label = row_dict.copy() - OrderedDict.copy does not work in AutoGraph
   dict_without_label = dict(row_dict)
   label = dict_without_label.pop('label')
   for field in CSV_SCHEMA:
@@ -563,7 +562,7 @@ def get_args():
 
     return args_parser.parse_args()
 
-def setup_environment():
+def setup_environment(args):
   global TRAIN_LOCATION
   #logging.warning(os.system('pip list'))
   #logging.warning(os.system('env'))
@@ -581,14 +580,20 @@ def setup_environment():
   else:
     logging.warning('training in cloud')
     os.system('gsutil cp {}/{} .'.format(GOOGLE_APPLICATION_CREDENTIALS_GCS_BUCKET, GOOGLE_APPLICATION_CREDENTIALS))
-    os.environ[ "GOOGLE_APPLICATION_CREDENTIALS"] = os.getcwd() + '/' + GOOGLE_APPLICATION_CREDENTIALS
-    if TF_CONFIG and '"master"' in TF_CONFIG:
-      logging.warning('TF_CONFIG before modification:' + str(os.environ['TF_CONFIG']))
-      TF_CONFIG = TF_CONFIG.replace('"master"', '"chief"')
-      os.environ['TF_CONFIG'] = TF_CONFIG
+    os.environ[ 'GOOGLE_APPLICATION_CREDENTIALS'] = os.getcwd() + '/' + GOOGLE_APPLICATION_CREDENTIALS
+
+  if TF_CONFIG and '"master"' in TF_CONFIG and args.distribution_strategy:
+    # If distribution strategy is not set, don't replace 'master' -> 'chief',
+    # otherwise system will assume that environment works in distributed setting and
+    # will expect to be executed in distribution strategy scope.
+    # See b/147248890 and
+    # https://github.com/tensorflow/tensorflow/blob/64c3d382cadf7bbe8e7e99884bede8284ff67f56/tensorflow/python/distribute/multi_worker_util.py#L235
+    # Fixed in TF2.1rc2 https://github.com/tensorflow/tensorflow/commit/0390084145761a1d4da3be2bec8c56a28399db14
+    logging.warning('TF_CONFIG before modification:' + str(os.environ['TF_CONFIG']))
+    TF_CONFIG = TF_CONFIG.replace('"master"', '"chief"')
+    os.environ['TF_CONFIG'] = TF_CONFIG
 
   if TF_CONFIG:
-    logging.warning('TF_CONFIG:' + str(TF_CONFIG))
     logging.warning('TF_CONFIG from env:' + str(os.environ['TF_CONFIG']))
 
 def main():
@@ -636,7 +641,7 @@ def main():
     BATCH_SIZE = args.batch_size
     EPOCHS = args.num_epochs
 
-    setup_environment()
+    setup_environment(args)
 
     if not args.distribution_strategy:
       logging.info('no distribution_strategy')
@@ -653,5 +658,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-

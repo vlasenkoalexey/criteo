@@ -59,6 +59,8 @@ echo MODEL_NAME=${MODEL_NAME}
 echo 'MODEL_NAME:'
 echo ${MODEL_NAME}
 
+CONFIG_FIX="--config=${PWD}/scripts/config_fix.yaml"
+
 case "${DISTRIBUTION_STRATEGY}" in
   "tf.distribute.MirroredStrategy" | "tf.distribute.experimental.CentralStorageStrategy")
    CONFIG="--master-accelerator=count=2,type=nvidia-tesla-k80"
@@ -70,6 +72,12 @@ case "${DISTRIBUTION_STRATEGY}" in
    CONFIG="--worker-image-uri=${IMAGE_URI} --worker-machine-type=n1-highcpu-16 --worker-count=2 --worker-accelerator=count=2,type=nvidia-tesla-k80"
    ;;
   *)
+    # If distribution strategy is not set, don't replace 'master' -> 'chief',
+    # otherwise system will assume that environment works in distributed setting and
+    # will expect to be executed in distribution strategy scope.
+    # See https://github.com/tensorflow/tensorflow/blob/64c3d382cadf7bbe8e7e99884bede8284ff67f56/tensorflow/python/distribute/multi_worker_util.py#L235
+    # Fixed in TF2.1rc2 https://github.com/tensorflow/tensorflow/commit/0390084145761a1d4da3be2bec8c56a28399db14
+    CONFIG_FIX=""
     echo "Invalid option ${DISTRIBUTION_STRATEGY}"
     ;;
 esac
@@ -84,7 +92,7 @@ export MODEL_DIR=gs://${BUCKET_NAME}/${MODEL_NAME}/model
 echo "Submitting an AI Platform job..."
 # see https://cloud.google.com/sdk/gcloud/reference/ai-platform/jobs/submit/training
 gcloud ai-platform jobs submit training ${JOB_NAME} \
-        --config=${PWD}/scripts/config_fix.yaml \
+        ${CONFIG_FIX} \
         --scale-tier=CUSTOM \
         --region=${REGION} \
         --master-image-uri=${IMAGE_URI} \

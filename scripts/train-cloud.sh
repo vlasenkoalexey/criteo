@@ -85,7 +85,7 @@ gcloud ai-platform jobs submit training ${JOB_NAME} \
         --region=${REGION} \
         --module-name=trainer.trainer \
         --package-path=${PACKAGE_PATH}  \
-         --master-machine-type=n1-highcpu-16 \
+        --master-machine-type=n1-highcpu-16 \
         --stream-logs \
         ${CONFIG} \
         -- \
