@@ -475,7 +475,7 @@ def train_estimator(strategy, model_dir):
       estimator,
       train_spec=tf.estimator.TrainSpec(input_fn=lambda: get_dataset('train').repeat(EPOCHS), max_steps=get_max_steps()),
       eval_spec=tf.estimator.EvalSpec(input_fn=lambda: get_dataset('test')))
-  logging.info('>>> done evaluating estimtor model')
+  logging.info('>>> done evaluating estimator model')
 
 def train_estimator_wide_and_deep(strategy, model_dir):
   logging.info('training for {} steps'.format(get_max_steps()))
@@ -501,7 +501,7 @@ def train_estimator_wide_and_deep(strategy, model_dir):
       estimator,
       train_spec=tf.estimator.TrainSpec(input_fn=lambda: get_dataset('train').repeat(EPOCHS), max_steps=get_max_steps()),
       eval_spec=tf.estimator.EvalSpec(input_fn=lambda: get_dataset('test')))
-  logging.info('>>> done evaluating estimtor model: ' + str(result))
+  logging.info('>>> done evaluating estimator model: ' + str(result))
 
 def get_args():
     """Define the task arguments with the default values.

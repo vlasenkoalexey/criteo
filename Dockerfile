@@ -3,7 +3,7 @@
 # https://pantheon.corp.google.com/gcr/images/deeplearning-platform-release/GLOBAL/tf2-cpu
 #FROM ubuntu:cosmic
 #FROM tensorflow/tensorflow:2.0.0-gpu
-FROM tensorflow/tensorflow:2.0.0-gpu
+FROM tensorflow/tensorflow:2.1.0rc2-gpu
 
 # Installs necessary dependencies.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -26,7 +26,7 @@ RUN pip install --upgrade pip
 
 RUN pip install setuptools requests wheel
 RUN pip install pandas
-RUN pip install tensorflow-gpu==2.0.0rc2
+#RUN pip install tensorflow-gpu==2.1.0rc2
 #RUN pip install --no-deps tensorflow-io==0.10.0
 RUN pip install google-cloud-bigquery
 RUN pip install google-cloud-bigquery-storage
