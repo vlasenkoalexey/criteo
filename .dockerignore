@@ -8,7 +8,7 @@ env.*
 trainer.egg-info
 trained
 model
-dependencies
+#dependencies
 dist
 
 # To prevent storing dev/temporary container data

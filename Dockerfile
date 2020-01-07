@@ -26,8 +26,8 @@ RUN pip install --upgrade pip
 
 RUN pip install setuptools requests wheel
 RUN pip install pandas
-#RUN pip install tensorflow==2.0.0
-RUN pip install --no-deps tensorflow-io==0.10.0
+RUN pip install tensorflow-gpu==2.0.0rc2
+#RUN pip install --no-deps tensorflow-io==0.10.0
 RUN pip install google-cloud-bigquery
 RUN pip install google-cloud-bigquery-storage
 RUN pip install google-cloud-logging
@@ -63,6 +63,9 @@ RUN mkdir /root/trainer
 RUN mkdir /root/model
 COPY alekseyv-scalableai-dev-077efe757ef6.json /root/
 COPY trainer/trainer.py /root/trainer/trainer.py
+COPY dependencies/tensorflow_io-0.9.10-cp27-cp27mu-manylinux2010_x86_64.whl /root/
+
+RUN pip install --no-deps /root/tensorflow_io-0.9.10-cp27-cp27mu-manylinux2010_x86_64.whl
 
 
 # Sets up the entry point to invoke the trainer.

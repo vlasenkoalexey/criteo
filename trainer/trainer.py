@@ -26,6 +26,7 @@ from google.api_core.exceptions import GoogleAPIError
 
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import dtypes
+import tensorflow_io as tf_io
 from tensorflow_io.bigquery import BigQueryClient
 from tensorflow_io.bigquery import BigQueryReadSession
 from tensorflow.python.client import device_lib
@@ -602,21 +603,22 @@ def main():
     global TRAIN_LOCATION
     global DATASET_SOURCE
     global DATASET_SIZE
-
     args = get_args()
     # https://github.com/tensorflow/tensorflow/issues/34568
     # https://www.tensorflow.org/tutorials/distribute/multi_worker_with_keras#train_the_model_with_multiworkermirroredstrategy
     # Currently there is a limitation in MultiWorkerMirroredStrategy where TensorFlow ops need to be created after the instance of strategy is created.
     distribution_strategy = None
     if args.distribution_strategy:
-        distribution_strategy = eval(args.distribution_strategy)()
+      distribution_strategy = eval(args.distribution_strategy)()
 
     logging_client = google.cloud.logging.Client()
     logging_client.setup_logging()
     logging.getLogger().setLevel(logging.INFO)
     logging.info('trainer started')
-    logging.info("tf.test.is_gpu_available(): " + str(tf.test.is_gpu_available()))
-    logging.info("device_lib.list_local_devices(): " + str(device_lib.list_local_devices()))
+    logging.info('tensorflow version: ' + tf.version.VERSION)
+    logging.info('tensorflow_io version: ' + tf_io.version.VERSION)
+    logging.info('tf.test.is_gpu_available(): ' + str(tf.test.is_gpu_available()))
+    logging.info('device_lib.list_local_devices(): ' + str(device_lib.list_local_devices()))
 
     logging.info('trainer arguments: ' + str(args))
 
