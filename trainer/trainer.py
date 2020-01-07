@@ -521,6 +521,11 @@ def get_args():
         help='model name, not used.')
 
     args_parser.add_argument(
+        '--use-gpu-on-master',
+        action='store_true',
+        help='whether GPU accelerator should be attached, not used.')
+
+    args_parser.add_argument(
         '--job-dir',
         help='folder or GCS location to write checkpoints and export models.',
         required=True)
@@ -614,7 +619,8 @@ def main():
     logging_client = google.cloud.logging.Client()
     logging_client.setup_logging()
     logging.getLogger().setLevel(logging.INFO)
-    logging.info('trainer started')
+    logging.info('trainer called with following arguments:')
+    logging.info(' '.join(sys.argv))
     logging.info('tensorflow version: ' + tf.version.VERSION)
     logging.info('tensorflow_io version: ' + tf_io.version.VERSION)
     logging.info('tf.test.is_gpu_available(): ' + str(tf.test.is_gpu_available()))

@@ -44,6 +44,9 @@ case $i in
     --distribution-strategy=*)
     DISTRIBUTION_STRATEGY="${i#*=}"
     ;;
+    --use-gpu-on-master)
+    CONFIG="--master-accelerator=count=1,type=nvidia-tesla-k80"
+    ;;
     --model-name=*)
     MODEL_NAME="${i#*=}"
             # unknown option
