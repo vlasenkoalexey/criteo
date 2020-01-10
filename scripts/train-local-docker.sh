@@ -8,4 +8,4 @@ docker push $IMAGE_URI
 
 # Install NVIDIA driver and https://github.com/NVIDIA/nvidia-docker in order to be able to train models on GPU.
 docker run --gpus all $IMAGE_URI python trainer/trainer.py --job-dir=/root/model $@
-#docker run -it -v ${PWD}:/host $IMAGE_URI python trainer/trainer.py --job-dir=/root/model $@
+#docker run --gpus all -it -v ${PWD}:/host $IMAGE_URI python trainer/trainer.py --job-dir=/root/model $@

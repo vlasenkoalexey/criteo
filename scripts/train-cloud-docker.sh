@@ -45,7 +45,7 @@ case $i in
     DISTRIBUTION_STRATEGY="${i#*=}"
     ;;
     --use-gpu-on-master)
-    CONFIG="--master-accelerator=count=1,type=nvidia-tesla-k80"
+    CONFIG="--master-accelerator=count=2,type=nvidia-tesla-k80"
     ;;
     --model-name=*)
     MODEL_NAME="${i#*=}"
@@ -100,6 +100,7 @@ gcloud ai-platform jobs submit training ${JOB_NAME} \
         --region=${REGION} \
         --master-image-uri=${IMAGE_URI} \
         --master-machine-type=n1-highcpu-16 \
+        --master-accelerator=count=2,type=nvidia-tesla-k80 \
         --stream-logs \
         ${CONFIG} \
         -- python trainer/trainer.py --job-dir=${MODEL_DIR} --train-location=cloud $@

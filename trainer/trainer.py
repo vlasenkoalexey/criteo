@@ -620,13 +620,11 @@ def main():
     logging_client.setup_logging()
     logging.getLogger().setLevel(logging.INFO)
     logging.info('trainer called with following arguments:')
-    logging.info(' '.join(sys.argv))
+    logging.info('>>> ' + ' '.join(sys.argv))
     logging.info('tensorflow version: ' + tf.version.VERSION)
     logging.info('tensorflow_io version: ' + tf_io.version.VERSION)
     logging.info('tf.test.is_gpu_available(): ' + str(tf.test.is_gpu_available()))
     logging.info('device_lib.list_local_devices(): ' + str(device_lib.list_local_devices()))
-
-    logging.info('trainer arguments: ' + str(args))
 
     TRAIN_LOCATION = TRAIN_LOCATION_TYPE[args.train_location]
     logging.info('train_location: ' + str(TRAIN_LOCATION))
