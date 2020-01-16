@@ -420,12 +420,13 @@ def train_and_evaluate_keras_model(model, model_dir):
   # crashing https://github.com/tensorflow/tensorflow/issues/27688
   checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoints_file_path, verbose=1, mode='max')
   fit_verbosity = 1 if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.local else 2
+  logging.info('training keras model')
   model.fit(training_ds, epochs=EPOCHS, verbose=fit_verbosity, callbacks=[tensorboard_callback, checkpoint_callback])
   eval_ds = get_dataset('test')
   loss, accuracy = model.evaluate(eval_ds)
   logging.info("Eval - Loss: {}, Accuracy: {}".format(loss, accuracy))
 
-def train_keras_functional_model_to_estimator(strategy, model, model_dir):
+def train_keras_model_to_estimator(strategy, model, model_dir):
     logging.info('training for {} steps'.format(get_max_steps()))
     config = tf.estimator.RunConfig(
             train_distribute=strategy,
@@ -449,10 +450,10 @@ def train_keras_functional_wide_and_deep(strategy, model_dir):
   train_and_evaluate_keras_model(create_keras_model_functional_wide_and_deep(), model_dir)
 
 def train_keras_to_estimator_sequential(strategy, model_dir):
-  train_keras_functional_model_to_estimator(strategy, create_keras_model_sequential(), model_dir)
+  train_keras_model_to_estimator(strategy, create_keras_model_sequential(), model_dir)
 
 def train_keras_to_estimator_functional(strategy, model_dir):
-  train_keras_functional_model_to_estimator(strategy, create_keras_model_functional(), model_dir)
+  train_keras_model_to_estimator(strategy, create_keras_model_functional(), model_dir)
 
 def train_estimator(strategy, model_dir):
   logging.info('training for {} steps'.format(get_max_steps()))
@@ -468,7 +469,7 @@ def train_estimator(strategy, model_dir):
       model_dir=model_dir,
       config=config,
       n_classes=2)
-  logging.info('training estimator')
+  logging.info('training estimator model')
   # Need to specify both max_steps and epochs. Each worker will go through epoch separately.
   # see https://www.tensorflow.org/api_docs/python/tf/estimator/train_and_evaluate?version=stable
   tf.estimator.train_and_evaluate(
@@ -619,8 +620,9 @@ def main():
     logging_client = google.cloud.logging.Client()
     logging_client.setup_logging()
     logging.getLogger().setLevel(logging.INFO)
+    logging.info('>>>>>>>>>>>>>>>>>>> trainer started <<<<<<<<<<<<<<<<<<<<<<<')
     logging.info('trainer called with following arguments:')
-    logging.info('>>> ' + ' '.join(sys.argv))
+    logging.info(' '.join(sys.argv))
     logging.info('tensorflow version: ' + tf.version.VERSION)
     logging.info('tensorflow_io version: ' + tf_io.version.VERSION)
     logging.info('tf.test.is_gpu_available(): ' + str(tf.test.is_gpu_available()))
