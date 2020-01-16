@@ -4,22 +4,27 @@
 {%- set has_tensorboard = False -%}
 {%- set script = "trainer/trainer.py" -%}
 {%- set port = 5000 -%}
-
-{%- set replicas = {"worker": worker_replicas,
-                    "ps": ps_replicas,
-                    "evaluator": has_eval|int,
-                    "tensorboard": has_tensorboard|int} -%}
 {% set cmdline_arg_list = cmdline_args.split(" ") %}
 
+{%- set replicas = {"worker": num_workers,
+                    "chief":1,
+                    "ps": num_ps,
+                    "evaluator": has_eval|int,
+                    "tensorboard": has_tensorboard|int} -%}
+
+{%- macro chief_host() -%}
+    \"{{ name }}-chief-0:{{ port }}\"
+{%- endmacro -%}
+
 {%- macro worker_hosts() -%}
-  {%- for i in range(worker_replicas) -%}
+  {%- for i in range(num_workers) -%}
     {%- if not loop.first -%},{%- endif -%}
     \"{{ name }}-worker-{{ i }}:{{ port }}\"
   {%- endfor -%}
 {%- endmacro -%}
 
 {%- macro ps_hosts() -%}
-  {%- for i in range(ps_replicas) -%}
+  {%- for i in range(num_ps) -%}
     {%- if not loop.first -%},{%- endif -%}
     \"{{ name }}-ps-{{ i }}:{{ port }}\"
   {%- endfor -%}
@@ -28,79 +33,88 @@
 {%- macro tf_config(task_type, task_id) -%}
 {
   \"cluster\": {
+    \"chief\": [{{ chief_host() }}]
+    {%- if num_workers > 0 -%},
     \"worker\": [{{ worker_hosts() }}]
-    {%- if ps_replicas > 0 -%}, \"ps\": [{{ ps_hosts() }}]{%- endif -%}
+    {%- endif -%}
+    {%- if num_ps > 0 -%}, \"ps\": [{{ ps_hosts() }}]{%- endif -%}
     {%- if has_eval -%},
     \"evaluator\": [\"{{ name }}-evaluator-0:{{ port }}\"]{%- endif -%}
   },
   \"task\": {
-    \"type\": \"{{ task_type }}\",
-    \"index\": \"{{ task_id }}\"
-  }
+    \"type\":  \"{{ task_type }}\",
+    \"index\": {{ task_id }}
+  },
+  \"environment\": \"cloud\"
 }
 {%- endmacro -%}
 
-{% for job in ["worker", "ps", "evaluator", "tensorboard"] -%}
+{% for job in ["worker", "ps", "evaluator", "tensorboard", "chief"] -%}
 {%- for i in range(replicas[job]) -%}
 kind: Service
 apiVersion: v1
 metadata:
   name: {{ name }}-{{ job }}-{{ i }}
 spec:
-  type: LoadBalancer
+  type: ClusterIP
+  clusterIP: None
   selector:
-    name: {{ name }}
-    job: {{ job }}
-    task: "{{ i }}"
+    job: {{ name }}-{{ job }}-{{ i }}
   ports:
   - port: {{ port }}
 ---
-kind: ReplicationController
+kind: Pod
 apiVersion: v1
 metadata:
+  name: {{ name }}
+metadata:
   name: {{ name }}-{{ job }}-{{ i }}
+  labels:
+    job: {{ name }}-{{ job }}-{{ i }}
 spec:
-  replicas: 1
-  template:
-    metadata:
-      labels:
-        name: {{ name }}
-        job: {{ job }}
-        task: "{{ i }}"
-    spec:
-      containers:
+  hostNetwork: true
+  dnsPolicy: ClusterFirstWithHostNet
+  restartPolicy: OnFailure
 {% if job == "tensorboard" %}
-      - name: tensorflow
-        image: tensorflow/tensorflow
+  containers:
+  - name: tensorflow
+    image: tensorflow/tensorflow
 {% else %}
-      - name: tensorflow
-        image: {{ image }}
-        resources:
-          limits:
-            nvidia.com/gpu: {{ num_gpus_per_worker }}
+  containers:
+  - name: tensorflow
+    image: {{ image }}
+    imagePullPolicy: Always
+    resources:
+      limits:
+        cpu: 3
+{% if job == "ps" %}
+        memory: 13G
+{% else %}
+        memory: 10G
+        nvidia.com/gpu: {{ num_gpus_per_worker }}
 {% endif %}
-        env:
+{% endif %}
+    env:
 {% if job != "tensorboard" %}
-        - name: TF_CONFIG
-          value: "{{ tf_config(job, i) }}"
+    - name: TF_CONFIG
+      value: "{{ tf_config(job, i) }}"
 {% endif %}
-        ports:
-        - containerPort: {{ port }}
+    ports:
+    - containerPort: {{ port }}
 {% if job == "tensorboard" %}
-        command:
-        - "tensorboard"
-        args:
-        - "--logdir={{ train_dir }}"
-        - "--port={{ port }}"
+    command:
+    - "tensorboard"
+    args:
+    - "--logdir={{ train_dir }}"
+    - "--port={{ port }}"
 {% else %}
-        command:
-        - "/usr/bin/python"
-        - "{{ script }}"
-        {%- for cmdline_arg in cmdline_arg_list %}
-        - "{{ cmdline_arg }}"
-        {%- endfor -%}
-      #{{'\n'}}
-      restartPolicy: Never
+    command:
+    - "/usr/bin/python"
+    - "{{ script }}"
+    {%- for cmdline_arg in cmdline_arg_list %}
+    - "{{ cmdline_arg }}"
+    {%- endfor -%}
+
 {% endif %}
 ---
 {% endfor %}

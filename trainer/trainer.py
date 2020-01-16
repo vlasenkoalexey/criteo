@@ -423,8 +423,10 @@ def train_and_evaluate_keras_model(model, model_dir):
   logging.info('training keras model')
   model.fit(training_ds, epochs=EPOCHS, verbose=fit_verbosity, callbacks=[tensorboard_callback, checkpoint_callback])
   eval_ds = get_dataset('test')
+  logging.info("done training keras model, evaluating model")
   loss, accuracy = model.evaluate(eval_ds)
   logging.info("Eval - Loss: {}, Accuracy: {}".format(loss, accuracy))
+  logging.info("done evaluating keras model")
 
 def train_keras_model_to_estimator(strategy, model, model_dir):
     logging.info('training for {} steps'.format(get_max_steps()))
@@ -469,14 +471,14 @@ def train_estimator(strategy, model_dir):
       model_dir=model_dir,
       config=config,
       n_classes=2)
-  logging.info('training estimator model')
+  logging.info('training and evaluating estimator model')
   # Need to specify both max_steps and epochs. Each worker will go through epoch separately.
   # see https://www.tensorflow.org/api_docs/python/tf/estimator/train_and_evaluate?version=stable
   tf.estimator.train_and_evaluate(
       estimator,
       train_spec=tf.estimator.TrainSpec(input_fn=lambda: get_dataset('train').repeat(EPOCHS), max_steps=get_max_steps()),
       eval_spec=tf.estimator.EvalSpec(input_fn=lambda: get_dataset('test')))
-  logging.info('>>> done evaluating estimator model')
+  logging.info('done evaluating estimator model')
 
 def train_estimator_wide_and_deep(strategy, model_dir):
   logging.info('training for {} steps'.format(get_max_steps()))
@@ -495,21 +497,20 @@ def train_estimator_wide_and_deep(strategy, model_dir):
       model_dir=model_dir,
       config=config,
       n_classes=2)
-  logging.info('training estimator')
+  logging.info('training wide and deep estimator model')
   # Need to specify both max_steps and epochs. Each worker will go through epoch separately.
   # see https://www.tensorflow.org/api_docs/python/tf/estimator/train_and_evaluate?version=stable
-  result = tf.estimator.train_and_evaluate(
+  tf.estimator.train_and_evaluate(
       estimator,
       train_spec=tf.estimator.TrainSpec(input_fn=lambda: get_dataset('train').repeat(EPOCHS), max_steps=get_max_steps()),
       eval_spec=tf.estimator.EvalSpec(input_fn=lambda: get_dataset('test')))
-  logging.info('>>> done evaluating estimator model: ' + str(result))
+  logging.info('done evaluating wine and deep estimator model')
 
 def get_args():
     """Define the task arguments with the default values.
     Returns:
         experiment parameters
     """
-
     args_parser = argparse.ArgumentParser()
     args_parser.add_argument(
         '--train-location',

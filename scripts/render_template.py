@@ -33,27 +33,27 @@ args_parser.add_argument(
 
 args, unknown = args_parser.parse_known_args()
 
-ps_replicas=0
-worker_replicas=1
+num_ps=0
+num_workers=0
 num_gpus_per_worker=1
 
 if args.distribution_strategy == "tf.distribute.MirroredStrategy" or args.distribution_strategy == "tf.distribute.experimental.CentralStorageStrategy":
     num_gpus_per_worker=2
-    worker_replicas=1
+    num_workers=0 # chief only
 elif args.distribution_strategy == "tf.distribute.experimental.ParameterServerStrategy":
-    ps_replicas=1
-    worker_replicas=2
+    num_ps=1
+    num_workers=2
     num_gpus_per_worker=2 # ???
 elif args.distribution_strategy == "tf.distribute.experimental.MultiWorkerMirroredStrategy":
-    worker_replicas=2
+    num_workers=2
     num_gpus_per_worker=2
 
 trainer_cmd_args = ' '.join(["--job-dir=" + MODEL_DIR, "--train-location=cloud"] + sys.argv[1:])
 
 with open(os.path.dirname(os.path.realpath(__file__)) + "/template.yaml.jinja", "r") as f:
   print(jinja2.Template(f.read()).render(
-      ps_replicas=ps_replicas,
-      worker_replicas=worker_replicas,
+      num_ps=num_ps,
+      num_workers=num_workers,
       num_gpus_per_worker=num_gpus_per_worker,
       train_dir=MODEL_DIR,
       cmdline_args=trainer_cmd_args

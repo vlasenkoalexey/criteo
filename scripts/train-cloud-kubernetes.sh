@@ -37,33 +37,33 @@ CURRENT_DATE_UTC=`date --utc -Iseconds`
 python scripts/render_template.py $@ | kubectl delete -f -
 python scripts/render_template.py $@ | kubectl create -f -
 
+echo "submitted job to kubernetes cluster"
 echo ""
 echo "log read command:"
-
 echo "gcloud logging read 'resource.type=\"container\"
-resource.labels.cluster_name=\"criteo-cluster\"
+resource.labels.cluster_name=\"criteo-cluster2\"
 resource.labels.namespace_id=\"default\"
 resource.labels.project_id=\"${PROJECT_ID}\"
 resource.labels.zone:\"us-central1-a\"
 resource.labels.container_name=\"tensorflow\"
 timestamp>=\"${CURRENT_DATE_UTC}\"
 ' --limit 1000000000000 --order asc --format \"value(resource.labels.pod_id, jsonPayload.message, textPayload)\""
+echo ""
 
 export PROJECT_ID=alekseyv-scalableai-dev
 while true; do
-sleep 60
 echo "logs since ${CURRENT_DATE_UTC}"
+sleep 60
 gcloud logging read "resource.type=\"container\"
-resource.labels.cluster_name=\"criteo-cluster\"
+resource.labels.cluster_name=\"criteo-cluster2\"
 resource.labels.namespace_id=\"default\"
 resource.labels.project_id=\"${PROJECT_ID}\"
 resource.labels.zone:\"us-central1-a\"
 resource.labels.container_name=\"tensorflow\"
 timestamp>=\"${CURRENT_DATE_UTC}\"
-" --limit 1000000000000 --order asc --format 'value(resource.labels.pod_id, jsonPayload.message, textPayload)'
-CURRENT_DATE_UTC=`date --utc -Iseconds`
+" --limit 1000000000000 --order asc --format 'value(resource.labels.pod_id, jsonPayload.message, textPayload)' > logfile.txt
+cat logfile.txt | sed '/^$/d'
+if [[ $(cat logfile.txt | head -n 5 | wc -l) -ne 0 ]]; then
+    CURRENT_DATE_UTC=`date --utc -Iseconds`;
+fi
 done
-
-#TODO: finish this
-#TODO: figure out how to make sure that training stops and not restarted after first iteration
-#TODO: figure out what to do with chief for PS training
