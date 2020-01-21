@@ -17,6 +17,8 @@
 
 #set -v
 
+python scripts/render_template.py $@ | kubectl delete -f -
+
 echo "Rebuilding docker image..."
 export PROJECT_ID=alekseyv-scalableai-dev
 export IMAGE_REPO_NAME=alekseyv_criteo_custom_container
@@ -27,21 +29,20 @@ docker push $IMAGE_URI
 
 
 export BUCKET_NAME="alekseyv-scalableai-dev-criteo-model-bucket"
-export REGION="us-central1"
+export REGION="us-west1-b"
 
 # gsutil mb gs://${BUCKET_NAME}
 #gsutil cp alekseyv-scalableai-dev-077efe757ef6.json gs://alekseyv-scalableai-dev-private-bucket/criteo
 
+CLUSTER_NAME='criteo-cluster'
 CURRENT_DATE_UTC=`date --utc -Iseconds`
-
-python scripts/render_template.py $@ | kubectl delete -f -
 python scripts/render_template.py $@ | kubectl create -f -
 
 echo "submitted job to kubernetes cluster"
 echo ""
 echo "log read command:"
 echo "gcloud logging read 'resource.type=\"container\"
-resource.labels.cluster_name=\"criteo-cluster2\"
+resource.labels.cluster_name=\"${CLUSTER_NAME}\"
 resource.labels.namespace_id=\"default\"
 resource.labels.project_id=\"${PROJECT_ID}\"
 resource.labels.zone:\"us-central1-a\"
@@ -55,7 +56,7 @@ while true; do
 echo "logs since ${CURRENT_DATE_UTC}"
 sleep 60
 gcloud logging read "resource.type=\"container\"
-resource.labels.cluster_name=\"criteo-cluster2\"
+resource.labels.cluster_name=\"${CLUSTER_NAME}\"
 resource.labels.namespace_id=\"default\"
 resource.labels.project_id=\"${PROJECT_ID}\"
 resource.labels.zone:\"us-central1-a\"
@@ -65,5 +66,8 @@ timestamp>=\"${CURRENT_DATE_UTC}\"
 cat logfile.txt | sed '/^$/d'
 if [[ $(cat logfile.txt | head -n 5 | wc -l) -ne 0 ]]; then
     CURRENT_DATE_UTC=`date --utc -Iseconds`;
+else
+    kubectl get events --sort-by=.metadata.creationTimestamp | head -n 3 | tail -n 2
 fi
+
 done

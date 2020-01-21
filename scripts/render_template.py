@@ -11,7 +11,8 @@ from datetime import datetime
 
 BUCKET_NAME="alekseyv-scalableai-dev-criteo-model-bucket"
 DISTRIBUTION_STRATEGY_TYPE_VALUES = 'tf.distribute.MirroredStrategy tf.distribute.experimental.ParameterServerStrategy ' \
-  'tf.distribute.experimental.MultiWorkerMirroredStrategy tf.distribute.experimental.CentralStorageStrategy'
+  'tf.distribute.experimental.MultiWorkerMirroredStrategy tf.distribute.experimental.CentralStorageStrategy ' \
+  'tf.distribute.experimental.TPUStrategy'
 
 CURRENT_DATE=datetime.now().strftime('date_%Y%m%d_%H%M%S')
 MODEL_NAME=CURRENT_DATE
@@ -35,7 +36,8 @@ args, unknown = args_parser.parse_known_args()
 
 num_ps=0
 num_workers=0
-num_gpus_per_worker=1
+num_gpus_per_worker=0
+num_tpus=0
 
 if args.distribution_strategy == "tf.distribute.MirroredStrategy" or args.distribution_strategy == "tf.distribute.experimental.CentralStorageStrategy":
     num_gpus_per_worker=2
@@ -47,6 +49,10 @@ elif args.distribution_strategy == "tf.distribute.experimental.ParameterServerSt
 elif args.distribution_strategy == "tf.distribute.experimental.MultiWorkerMirroredStrategy":
     num_workers=2
     num_gpus_per_worker=2
+elif args.distribution_strategy == "tf.distribute.experimental.TPUStrategy":
+    num_workers=0
+    num_gpus_per_worker=0
+    num_tpus=32 # minimal available number for central1-a
 
 trainer_cmd_args = ' '.join(["--job-dir=" + MODEL_DIR, "--train-location=cloud"] + sys.argv[1:])
 
@@ -55,6 +61,7 @@ with open(os.path.dirname(os.path.realpath(__file__)) + "/template.yaml.jinja", 
       num_ps=num_ps,
       num_workers=num_workers,
       num_gpus_per_worker=num_gpus_per_worker,
+      num_tpus=num_tpus,
       train_dir=MODEL_DIR,
       cmdline_args=trainer_cmd_args
       ))

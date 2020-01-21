@@ -58,7 +58,8 @@ TRAIN_LOCATION = TRAIN_LOCATION_TYPE.local
 
 # https://www.tensorflow.org/guide/distributed_training
 DISTRIBUTION_STRATEGY_TYPE_VALUES = 'tf.distribute.MirroredStrategy tf.distribute.experimental.ParameterServerStrategy ' \
-  'tf.distribute.experimental.MultiWorkerMirroredStrategy tf.distribute.experimental.CentralStorageStrategy'
+  'tf.distribute.experimental.MultiWorkerMirroredStrategy tf.distribute.experimental.CentralStorageStrategy ' \
+  'tf.distribute.experimental.TPUStrategy'
 TRAINING_FUNCTION_VALUES = 'train_keras_sequential train_keras_functional train_keras_functional_wide_and_deep ' \
   'train_keras_to_estimator_functional train_keras_to_estimator_sequential train_estimator train_estimator_wide_and_deep'
 
@@ -183,7 +184,7 @@ def get_mean_and_std_dicts():
   std_dict = dict((field[0].replace('std_', ''), df[field[0]][0]) for field in df.items() if field[0].startswith('std'))
   return (mean_dict, std_dict)
 
-def transform_row(row_dict, mean_dict, std_dict):
+def transform_row(row_dict, mean_dict, std_dict, categorical_vocabulary_size_dict):
   dict_without_label = dict(row_dict)
   label = dict_without_label.pop('label')
   for field in CSV_SCHEMA:
@@ -192,7 +193,12 @@ def transform_row(row_dict, mean_dict, std_dict):
             value = float(dict_without_label[field.name])
             dict_without_label[field.name] = (value - mean_dict[field.name]) / std_dict[field.name]
         else:
-            dict_without_label[field.name] = 0.0 # don't use normalized 0 value for nulls
+            # use normalized mean value if data is missing
+            dict_without_label[field.name] =float(mean_dict[field.name] / std_dict[field.name])
+    elif (field.name.startswith('cat')):
+        value = dict_without_label[field.name]
+        hash_bucket_size = min(categorical_vocabulary_size_dict[field.name], 100000)
+        dict_without_label[field.name] = float(tf.strings.to_hash_bucket_fast(value, hash_bucket_size))
   return (dict_without_label, label)
 
 def read_bigquery(table_name):
@@ -200,6 +206,7 @@ def read_bigquery(table_name):
     table_name += '_small'
 
   (mean_dict, std_dict) = get_mean_and_std_dicts()
+  categorical_vocabulary_size_dict = get_vocabulary_size_dict()
   requested_streams_count = 10
   tensorflow_io_bigquery_client = BigQueryClient()
   read_session = tensorflow_io_bigquery_client.read_session(
@@ -221,7 +228,7 @@ def read_bigquery(table_name):
             cycle_length=streams_count64,
             num_parallel_calls=streams_count64)
 
-  transformed_ds = dataset.map (lambda row: transform_row(row, mean_dict, std_dict), num_parallel_calls=streams_count) \
+  transformed_ds = dataset.map (lambda row: transform_row(row, mean_dict, std_dict, categorical_vocabulary_size_dict), num_parallel_calls=streams_count) \
     .shuffle(10000) \
     .batch(BATCH_SIZE) \
     .prefetch(100)
@@ -235,11 +242,10 @@ def read_bigquery(table_name):
   # return transformed_ds.with_options(options)
   return transformed_ds
 
-def transofrom_row_gcs(row_tuple, mean_dict, std_dict):
+def transofrom_row_gcs(row_tuple, mean_dict, std_dict, categorical_vocabulary_size_dict):
     row_dict = dict(zip(list(field.name for field in CSV_SCHEMA) + ['row_hash'], list(row_tuple)))
     row_dict.pop('row_hash')
-    return transform_row(row_dict, mean_dict, std_dict)
-
+    return transform_row(row_dict, mean_dict, std_dict, categorical_vocabulary_size_dict)
 
 def _get_file_names(file_pattern):
   if isinstance(file_pattern, list):
@@ -272,7 +278,8 @@ def read_gcs(table_name):
           num_parallel_calls=num_parallel_calls)
 
   (mean_dict, std_dict) = get_mean_and_std_dicts()
-  transformed_ds = dataset.map (lambda *row_tuple: transofrom_row_gcs(row_tuple, mean_dict, std_dict)) \
+  categorical_vocabulary_size_dict = get_vocabulary_size_dict()
+  transformed_ds = dataset.map (lambda *row_tuple: transofrom_row_gcs(row_tuple, mean_dict, std_dict, categorical_vocabulary_size_dict)) \
     .shuffle(10000) \
     .batch(BATCH_SIZE) \
     .prefetch(100)
@@ -286,21 +293,27 @@ def get_max_steps():
   dataset_size = FULL_TRAIN_DATASET_SIZE if DATASET_SIZE == DATASET_SIZE_TYPE.full else SMALL_TRAIN_DATASET_SIZE
   return EPOCHS * dataset_size // BATCH_SIZE
 
+
 def create_categorical_feature_column(categorical_vocabulary_size_dict, key):
   hash_bucket_size = min(categorical_vocabulary_size_dict[key], 100000)
   # TODO: consider using categorical_column_with_vocabulary_list
   categorical_feature_column = tf.feature_column.categorical_column_with_hash_bucket(
     key,
     hash_bucket_size,
-    dtype=tf.dtypes.string
+    dtype=tf.dtypes.int64
+    #dtype=tf.dtypes.int64
+    #dtype=tf.dtypes.string
   )
-  if hash_bucket_size < 10:
-    return tf.feature_column.indicator_column(categorical_feature_column)
+  # if hash_bucket_size < 10:
+  #   return tf.feature_column.indicator_column(categorical_feature_column)
 
   embedding_feature_column = tf.feature_column.embedding_column(
       categorical_feature_column,
       int(min(50, math.floor(6 * hash_bucket_size**0.25))))
   return embedding_feature_column
+
+# def create_categorical_feature_column(categorical_vocabulary_size_dict, key):
+#   return tf.feature_column.numeric_column(key, dtype=tf.dtypes.int64)
 
 def create_linear_feature_columns():
   return list(tf.feature_column.numeric_column(field.name, dtype=tf.dtypes.float32)  for field in CSV_SCHEMA if field.field_type == 'INTEGER' and field.name != 'label')
@@ -385,6 +398,8 @@ def create_keras_model_functional_wide_and_deep():
 def create_keras_model_sequential():
   categorical_vocabulary_size_dict = get_vocabulary_size_dict()
   feature_columns = create_feature_columns(categorical_vocabulary_size_dict)
+
+  logging.info('create_keras_model_sequential feature_columns: %s', feature_columns)
   feature_layer = tf.keras.layers.DenseFeatures(feature_columns, name="feature_layer")
   Dense = tf.keras.layers.Dense
   model = tf.keras.Sequential(
@@ -396,6 +411,7 @@ def create_keras_model_sequential():
       Dense(1, activation=tf.nn.sigmoid)
   ])
 
+  logging.info('compiling sequential keras model')
   # Compile Keras model
   model.compile(
       # cannot use Adagrad with mirroredstartegy https://github.com/tensorflow/tensorflow/issues/19551
@@ -410,13 +426,16 @@ def train_and_evaluate_keras_model(model, model_dir):
   logging.info('training datset size: {}'.format(dataset_size))
   training_ds = get_dataset('train')
 
-  log_dir= os.path.join(model_dir, "logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+  #log_dir= os.path.join(model_dir, "logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+  log_dir= os.path.join(model_dir, "logs/tpu")
   tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, embeddings_freq=1, profile_batch=0)
 
   checkpoints_dir= os.path.join(model_dir, "checkpoints")
   if not os.path.exists(checkpoints_dir):
       os.makedirs(checkpoints_dir)
-  checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
+  #checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5" KeyError: 'accuracy' for TPU
+  #checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}.hdf5"
+  checkpoints_file_path = checkpoints_dir + "/epochs_tpu.hdf5"
   # crashing https://github.com/tensorflow/tensorflow/issues/27688
   checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoints_file_path, verbose=1, mode='max')
   fit_verbosity = 1 if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.local else 2
@@ -565,8 +584,26 @@ def get_args():
         '--num-epochs',
         help='Maximum number of training data epochs on which to train.',
         default=2,
-        type=int,
-    )
+        type=int)
+
+    args_parser.add_argument(
+        '--tensorboard',
+        action='store_true',
+        help='Ignored by this script.',
+        default=None)
+
+    args_parser.add_argument(
+        '--tpu',
+        help='The Cloud TPU to use for training. This should be either the name '
+             'used when creating the Cloud TPU, or a grpc://ip.address.of.tpu:8470 '
+             'url. Set by Platform AI.',
+        default=None)
+
+    args_parser.add_argument(
+        '--tpu_zone',
+        help='GCE zone where the Cloud TPU is located in. If not specified, system '
+             'will attempt to automatically detect the GCE project from metadata.',
+        default=None)
 
     return args_parser.parse_args()
 
@@ -611,12 +648,6 @@ def main():
     global DATASET_SOURCE
     global DATASET_SIZE
     args = get_args()
-    # https://github.com/tensorflow/tensorflow/issues/34568
-    # https://www.tensorflow.org/tutorials/distribute/multi_worker_with_keras#train_the_model_with_multiworkermirroredstrategy
-    # Currently there is a limitation in MultiWorkerMirroredStrategy where TensorFlow ops need to be created after the instance of strategy is created.
-    distribution_strategy = None
-    if args.distribution_strategy:
-      distribution_strategy = eval(args.distribution_strategy)()
 
     logging_client = google.cloud.logging.Client()
     logging_client.setup_logging()
@@ -624,9 +655,35 @@ def main():
     logging.info('>>>>>>>>>>>>>>>>>>> trainer started <<<<<<<<<<<<<<<<<<<<<<<')
     logging.info('trainer called with following arguments:')
     logging.info(' '.join(sys.argv))
+
+    # Uncomment this line to see Op device placement
+    # tf.debugging.set_log_device_placement(True)
+
+    # https://github.com/tensorflow/tensorflow/issues/34568
+    # https://www.tensorflow.org/tutorials/distribute/multi_worker_with_keras#train_the_model_with_multiworkermirroredstrategy
+    # Currently there is a limitation in MultiWorkerMirroredStrategy where TensorFlow ops need to be created after the instance of strategy is created.
+    distribution_strategy = None
+    # TPU won't work on this sample because strings are not supported by TPU, see:
+    # https://cloud.google.com/tpu/docs/troubleshooting#unsupported_data_type
+    if args.distribution_strategy == 'tf.distribute.experimental.TPUStrategy':
+      tpu = None
+      try:
+        logging.info('resolving to TPU cluster')
+        tpu = tf.distribute.cluster_resolver.TPUClusterResolver()
+        logging.info('connecting to TPU cluster')
+        tf.config.experimental_connect_to_cluster(tpu)
+      except ValueError as e:
+        logging.info('error connecting to TPU cluster: %s', e)
+        return
+      logging.info('initializing TPU system')
+      tf.tpu.experimental.initialize_tpu_system(tpu)
+      distribution_strategy = tf.distribute.experimental.TPUStrategy(tpu)
+      logging.info('training using TPUStrategy, tpu.cluster_spec: %s', tpu.cluster_spec())
+    elif args.distribution_strategy:
+      distribution_strategy = eval(args.distribution_strategy)()
+
     logging.info('tensorflow version: ' + tf.version.VERSION)
     logging.info('tensorflow_io version: ' + tf_io.version.VERSION)
-    logging.info('tf.test.is_gpu_available(): ' + str(tf.test.is_gpu_available()))
     logging.info('device_lib.list_local_devices(): ' + str(device_lib.list_local_devices()))
 
     TRAIN_LOCATION = TRAIN_LOCATION_TYPE[args.train_location]

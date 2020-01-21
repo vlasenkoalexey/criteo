@@ -66,11 +66,11 @@ spec:
 kind: Pod
 apiVersion: v1
 metadata:
-  name: {{ name }}
-metadata:
   name: {{ name }}-{{ job }}-{{ i }}
   labels:
     job: {{ name }}-{{ job }}-{{ i }}
+  annotations:
+    tf-version.cloud-tpus.google.com: "2.1"
 spec:
   hostNetwork: true
   dnsPolicy: ClusterFirstWithHostNet
@@ -86,6 +86,9 @@ spec:
     imagePullPolicy: Always
     resources:
       limits:
+{% if num_tpus > 0 %}
+        cloud-tpus.google.com/v2: {{ num_tpus }}
+{% endif %}
         cpu: 3
 {% if job == "ps" %}
         memory: 13G

@@ -44,6 +44,9 @@ case $i in
     --distribution-strategy=*)
     DISTRIBUTION_STRATEGY="${i#*=}"
     ;;
+    --tensorboard)
+    TENSORBOARD=true
+    ;;
     --use-gpu-on-master)
     CONFIG="--master-accelerator=count=2,type=nvidia-tesla-k80"
     ;;
@@ -62,17 +65,23 @@ echo MODEL_NAME=${MODEL_NAME}
 echo 'MODEL_NAME:'
 echo ${MODEL_NAME}
 
+SCALE_TIER="CUSTOM"
 CONFIG_FIX="--config=${PWD}/scripts/config_fix.yaml"
+CONFIG="--master-machine-type=n1-highcpu-16 --master-accelerator=count=2,type=nvidia-tesla-k80"
 
 case "${DISTRIBUTION_STRATEGY}" in
-  "tf.distribute.MirroredStrategy" | "tf.distribute.experimental.CentralStorageStrategy")
-   CONFIG="--master-accelerator=count=2,type=nvidia-tesla-k80"
+  "tf.distribute.MirroredStrategy")
+   CONFIG="--master-machine-type=n1-highcpu-16 --master-accelerator=count=2,type=nvidia-tesla-k80"
    ;;
-  "tf.distribute.experimental.ParameterServerStrategy")
-   CONFIG="--parameter-server-count=1 --parameter-server-image-uri=${IMAGE_URI} --parameter-server-machine-type=n1-highcpu-16 --worker-count=2 --worker-machine-type=n1-highcpu-16 --worker-image-uri=${IMAGE_URI}"
+  "tf.distribute.experimental.ParameterServerStrategy" | "tf.distribute.experimental.CentralStorageStrategy")
+   CONFIG="--master-machine-type=n1-highcpu-16 --parameter-server-count=1 --parameter-server-image-uri=${IMAGE_URI} --parameter-server-machine-type=n1-highcpu-16 --worker-count=2 --worker-machine-type=n1-highcpu-16 --worker-image-uri=${IMAGE_URI}"
    ;;
   "tf.distribute.experimental.MultiWorkerMirroredStrategy")
-   CONFIG="--worker-image-uri=${IMAGE_URI} --worker-machine-type=n1-highcpu-16 --worker-count=2 --worker-accelerator=count=2,type=nvidia-tesla-k80"
+   CONFIG="--master-machine-type=n1-highcpu-16 --master-accelerator=count=2,type=nvidia-tesla-k80 --worker-image-uri=${IMAGE_URI} --worker-machine-type=n1-highcpu-16 --worker-count=2 --worker-accelerator=count=2,type=nvidia-tesla-k80"
+   ;;
+  "tf.distribute.experimental.TPUStrategy")
+   CONFIG="--tpu-tf-version=1.14"
+   SCALE_TIER="BASIC_TPU"
    ;;
   *)
     # If distribution strategy is not set, don't replace 'master' -> 'chief',
@@ -92,15 +101,18 @@ echo ${CONFIG}
 JOB_NAME=train_${MODEL_NAME}
 export MODEL_DIR=gs://${BUCKET_NAME}/${MODEL_NAME}/model
 
+if [ "$TENSORBOARD" = true ] ; then
+    trap "kill 0" SIGINT
+    tensorboard --logdir=${MODEL_DIR}/model.joblib/logs --po=0 &
+fi
+
 echo "Submitting an AI Platform job..."
 # see https://cloud.google.com/sdk/gcloud/reference/ai-platform/jobs/submit/training
-gcloud ai-platform jobs submit training ${JOB_NAME} \
+gcloud beta ai-platform jobs submit training ${JOB_NAME} \
         ${CONFIG_FIX} \
-        --scale-tier=CUSTOM \
+        --scale-tier=${SCALE_TIER} \
         --region=${REGION} \
         --master-image-uri=${IMAGE_URI} \
-        --master-machine-type=n1-highcpu-16 \
-        --master-accelerator=count=2,type=nvidia-tesla-k80 \
         --stream-logs \
         ${CONFIG} \
         -- python trainer/trainer.py --job-dir=${MODEL_DIR} --train-location=cloud $@
