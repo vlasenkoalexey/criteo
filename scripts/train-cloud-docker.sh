@@ -73,8 +73,11 @@ case "${DISTRIBUTION_STRATEGY}" in
   "tf.distribute.MirroredStrategy")
    CONFIG="--master-machine-type=n1-highcpu-16 --master-accelerator=count=2,type=nvidia-tesla-k80"
    ;;
-  "tf.distribute.experimental.ParameterServerStrategy" | "tf.distribute.experimental.CentralStorageStrategy")
+  "tf.distribute.experimental.ParameterServerStrategy")
    CONFIG="--master-machine-type=n1-highcpu-16 --parameter-server-count=1 --parameter-server-image-uri=${IMAGE_URI} --parameter-server-machine-type=n1-highcpu-16 --worker-count=2 --worker-machine-type=n1-highcpu-16 --worker-image-uri=${IMAGE_URI}"
+   ;;
+  "tf.distribute.experimental.CentralStorageStrategy")
+   CONFIG="--master-machine-type=n1-highcpu-16 --parameter-server-count=1 --parameter-server-image-uri=${IMAGE_URI} --parameter-server-machine-type=n1-highcpu-16"
    ;;
   "tf.distribute.experimental.MultiWorkerMirroredStrategy")
    CONFIG="--master-machine-type=n1-highcpu-16 --master-accelerator=count=2,type=nvidia-tesla-k80 --worker-image-uri=${IMAGE_URI} --worker-machine-type=n1-highcpu-16 --worker-count=2 --worker-accelerator=count=2,type=nvidia-tesla-k80"
@@ -103,7 +106,8 @@ export MODEL_DIR=gs://${BUCKET_NAME}/${MODEL_NAME}/model
 
 if [ "$TENSORBOARD" = true ] ; then
     trap "kill 0" SIGINT
-    tensorboard --logdir=${MODEL_DIR}/model.joblib/logs --po=0 &
+    echo "running tensorboard: tensorboard --logdir=${MODEL_DIR}/logs --port=0"
+    tensorboard --logdir=${MODEL_DIR}/logs --port=0 &
 fi
 
 echo "Submitting an AI Platform job..."

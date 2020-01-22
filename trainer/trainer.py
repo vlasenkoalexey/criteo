@@ -48,6 +48,7 @@ DATASET_ID = 'criteo_kaggle'
 
 BATCH_SIZE = 128
 EPOCHS = 5
+NO_EMBEDDINGS = False
 
 FULL_TRAIN_DATASET_SIZE = 36670642 # select count(1) from `alekseyv-scalableai-dev.criteo_kaggle.train`
 SMALL_TRAIN_DATASET_SIZE = 366715  # select count(1) from `alekseyv-scalableai-dev.criteo_kaggle.train_small`
@@ -184,7 +185,7 @@ def get_mean_and_std_dicts():
   std_dict = dict((field[0].replace('std_', ''), df[field[0]][0]) for field in df.items() if field[0].startswith('std'))
   return (mean_dict, std_dict)
 
-def transform_row(row_dict, mean_dict, std_dict, categorical_vocabulary_size_dict):
+def transform_row(row_dict, mean_dict, std_dict):
   dict_without_label = dict(row_dict)
   label = dict_without_label.pop('label')
   for field in CSV_SCHEMA:
@@ -194,11 +195,7 @@ def transform_row(row_dict, mean_dict, std_dict, categorical_vocabulary_size_dic
             dict_without_label[field.name] = (value - mean_dict[field.name]) / std_dict[field.name]
         else:
             # use normalized mean value if data is missing
-            dict_without_label[field.name] =float(mean_dict[field.name] / std_dict[field.name])
-    elif (field.name.startswith('cat')):
-        value = dict_without_label[field.name]
-        hash_bucket_size = min(categorical_vocabulary_size_dict[field.name], 100000)
-        dict_without_label[field.name] = float(tf.strings.to_hash_bucket_fast(value, hash_bucket_size))
+            dict_without_label[field.name] = float(mean_dict[field.name] / std_dict[field.name])
   return (dict_without_label, label)
 
 def read_bigquery(table_name):
@@ -206,7 +203,6 @@ def read_bigquery(table_name):
     table_name += '_small'
 
   (mean_dict, std_dict) = get_mean_and_std_dicts()
-  categorical_vocabulary_size_dict = get_vocabulary_size_dict()
   requested_streams_count = 10
   tensorflow_io_bigquery_client = BigQueryClient()
   read_session = tensorflow_io_bigquery_client.read_session(
@@ -228,7 +224,7 @@ def read_bigquery(table_name):
             cycle_length=streams_count64,
             num_parallel_calls=streams_count64)
 
-  transformed_ds = dataset.map (lambda row: transform_row(row, mean_dict, std_dict, categorical_vocabulary_size_dict), num_parallel_calls=streams_count) \
+  transformed_ds = dataset.map (lambda row: transform_row(row, mean_dict, std_dict), num_parallel_calls=streams_count) \
     .shuffle(10000) \
     .batch(BATCH_SIZE) \
     .prefetch(100)
@@ -242,10 +238,11 @@ def read_bigquery(table_name):
   # return transformed_ds.with_options(options)
   return transformed_ds
 
-def transofrom_row_gcs(row_tuple, mean_dict, std_dict, categorical_vocabulary_size_dict):
+def transofrom_row_gcs(row_tuple, mean_dict, std_dict):
     row_dict = dict(zip(list(field.name for field in CSV_SCHEMA) + ['row_hash'], list(row_tuple)))
     row_dict.pop('row_hash')
-    return transform_row(row_dict, mean_dict, std_dict, categorical_vocabulary_size_dict)
+    return transform_row(row_dict, mean_dict, std_dict)
+
 
 def _get_file_names(file_pattern):
   if isinstance(file_pattern, list):
@@ -278,8 +275,7 @@ def read_gcs(table_name):
           num_parallel_calls=num_parallel_calls)
 
   (mean_dict, std_dict) = get_mean_and_std_dicts()
-  categorical_vocabulary_size_dict = get_vocabulary_size_dict()
-  transformed_ds = dataset.map (lambda *row_tuple: transofrom_row_gcs(row_tuple, mean_dict, std_dict, categorical_vocabulary_size_dict)) \
+  transformed_ds = dataset.map (lambda *row_tuple: transofrom_row_gcs(row_tuple, mean_dict, std_dict)) \
     .shuffle(10000) \
     .batch(BATCH_SIZE) \
     .prefetch(100)
@@ -293,33 +289,30 @@ def get_max_steps():
   dataset_size = FULL_TRAIN_DATASET_SIZE if DATASET_SIZE == DATASET_SIZE_TYPE.full else SMALL_TRAIN_DATASET_SIZE
   return EPOCHS * dataset_size // BATCH_SIZE
 
-
 def create_categorical_feature_column(categorical_vocabulary_size_dict, key):
   hash_bucket_size = min(categorical_vocabulary_size_dict[key], 100000)
   # TODO: consider using categorical_column_with_vocabulary_list
   categorical_feature_column = tf.feature_column.categorical_column_with_hash_bucket(
     key,
     hash_bucket_size,
-    dtype=tf.dtypes.int64
-    #dtype=tf.dtypes.int64
-    #dtype=tf.dtypes.string
+    dtype=tf.dtypes.string
   )
-  # if hash_bucket_size < 10:
-  #   return tf.feature_column.indicator_column(categorical_feature_column)
+  if hash_bucket_size < 10:
+    return tf.feature_column.indicator_column(categorical_feature_column)
 
   embedding_feature_column = tf.feature_column.embedding_column(
       categorical_feature_column,
       int(min(50, math.floor(6 * hash_bucket_size**0.25))))
   return embedding_feature_column
 
-# def create_categorical_feature_column(categorical_vocabulary_size_dict, key):
-#   return tf.feature_column.numeric_column(key, dtype=tf.dtypes.int64)
-
 def create_linear_feature_columns():
   return list(tf.feature_column.numeric_column(field.name, dtype=tf.dtypes.float32)  for field in CSV_SCHEMA if field.field_type == 'INTEGER' and field.name != 'label')
 
 def create_categorical_feature_columns(categorical_vocabulary_size_dict):
-  return list(create_categorical_feature_column(categorical_vocabulary_size_dict, key) for key, _ in categorical_vocabulary_size_dict.items())
+  if NO_EMBEDDINGS:
+    return []
+  else:
+    return list(create_categorical_feature_column(categorical_vocabulary_size_dict, key) for key, _ in categorical_vocabulary_size_dict.items())
 
 def create_feature_columns(categorical_vocabulary_size_dict):
   feature_columns = []
@@ -399,7 +392,6 @@ def create_keras_model_sequential():
   categorical_vocabulary_size_dict = get_vocabulary_size_dict()
   feature_columns = create_feature_columns(categorical_vocabulary_size_dict)
 
-  logging.info('create_keras_model_sequential feature_columns: %s', feature_columns)
   feature_layer = tf.keras.layers.DenseFeatures(feature_columns, name="feature_layer")
   Dense = tf.keras.layers.Dense
   model = tf.keras.Sequential(
@@ -427,23 +419,21 @@ def train_and_evaluate_keras_model(model, model_dir):
   training_ds = get_dataset('train')
 
   #log_dir= os.path.join(model_dir, "logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-  log_dir= os.path.join(model_dir, "logs/tpu")
+  log_dir= os.path.join(model_dir, "logs")
   tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, embeddings_freq=1, profile_batch=0)
 
   checkpoints_dir= os.path.join(model_dir, "checkpoints")
   if not os.path.exists(checkpoints_dir):
       os.makedirs(checkpoints_dir)
-  #checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5" KeyError: 'accuracy' for TPU
-  #checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}.hdf5"
-  checkpoints_file_path = checkpoints_dir + "/epochs_tpu.hdf5"
+  checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
   # crashing https://github.com/tensorflow/tensorflow/issues/27688
   checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoints_file_path, verbose=1, mode='max')
-  fit_verbosity = 1 if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.local else 2
+  verbosity = 1 if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.local else 2
   logging.info('training keras model')
-  model.fit(training_ds, epochs=EPOCHS, verbose=fit_verbosity, callbacks=[tensorboard_callback, checkpoint_callback])
+  model.fit(training_ds, epochs=EPOCHS, verbose=verbosity, callbacks=[tensorboard_callback, checkpoint_callback])
   eval_ds = get_dataset('test')
   logging.info("done training keras model, evaluating model")
-  loss, accuracy = model.evaluate(eval_ds)
+  loss, accuracy = model.evaluate(eval_ds, verbose=verbosity)
   logging.info("Eval - Loss: {}, Accuracy: {}".format(loss, accuracy))
   logging.info("done evaluating keras model")
 
@@ -587,22 +577,20 @@ def get_args():
         type=int)
 
     args_parser.add_argument(
+        '--no-embeddings',
+        action='store_true',
+        help='Ignored by this script.',
+        default=True)
+
+    args_parser.add_argument(
         '--tensorboard',
         action='store_true',
         help='Ignored by this script.',
-        default=None)
+        default=False)
 
     args_parser.add_argument(
-        '--tpu',
-        help='The Cloud TPU to use for training. This should be either the name '
-             'used when creating the Cloud TPU, or a grpc://ip.address.of.tpu:8470 '
-             'url. Set by Platform AI.',
-        default=None)
-
-    args_parser.add_argument(
-        '--tpu_zone',
-        help='GCE zone where the Cloud TPU is located in. If not specified, system '
-             'will attempt to automatically detect the GCE project from metadata.',
+        '--ai-platform-mode',
+        help='Ignored by this script.',
         default=None)
 
     return args_parser.parse_args()
@@ -647,6 +635,7 @@ def main():
     global TRAIN_LOCATION
     global DATASET_SOURCE
     global DATASET_SIZE
+    global NO_EMBEDDINGS
     args = get_args()
 
     logging_client = google.cloud.logging.Client()
@@ -692,13 +681,15 @@ def main():
     logging.info('dataset_source: ' + str(DATASET_SOURCE))
     DATASET_SIZE = DATASET_SIZE_TYPE[args.dataset_size]
     logging.info('dataset_size: ' + str(DATASET_SIZE))
+    NO_EMBEDDINGS = args.no_embeddings
+    logging.info('no_embeddings: ' + str(NO_EMBEDDINGS))
 
     logging.info('distribution_strategy: ' + str(type(distribution_strategy)))
 
     model_dir = args.job_dir
-    if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.cloud and os.environ.get('HOSTNAME'):
-      model_dir = os.path.join(model_dir, os.environ.get('HOSTNAME'))
-    model_dir = os.path.join(model_dir, args.training_function, 'model.joblib')
+    # if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.cloud and os.environ.get('HOSTNAME'):
+    #   model_dir = os.path.join(model_dir, os.environ.get('HOSTNAME'))
+    # model_dir = os.path.join(model_dir, args.training_function, 'model.joblib')
     logging.info('Model will be saved to "%s..."', model_dir)
 
     training_function = getattr(sys.modules[__name__], args.training_function)

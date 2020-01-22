@@ -74,7 +74,7 @@ metadata:
 spec:
   hostNetwork: true
   dnsPolicy: ClusterFirstWithHostNet
-  restartPolicy: OnFailure
+  restartPolicy: Never
 {% if job == "tensorboard" %}
   containers:
   - name: tensorflow
@@ -91,9 +91,9 @@ spec:
 {% endif %}
         cpu: 3
 {% if job == "ps" %}
-        memory: 13G
+        memory: 12G
 {% else %}
-        memory: 10G
+        memory: 12G
         nvidia.com/gpu: {{ num_gpus_per_worker }}
 {% endif %}
 {% endif %}
