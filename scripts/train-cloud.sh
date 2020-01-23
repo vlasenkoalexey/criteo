@@ -43,7 +43,6 @@ case $i in
     ;;
     --model-name=*)
     MODEL_NAME="${i#*=}"
-            # unknown option
     ;;
     --ai-platform-mode=*)
     AI_PLATFROM_MODE="${i#*=}"

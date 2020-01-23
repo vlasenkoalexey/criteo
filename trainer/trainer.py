@@ -58,6 +58,7 @@ TRAIN_LOCATION_TYPE = Enum('TRAIN_LOCATION_TYPE', TRAIN_LOCATION_TYPE_VALUES)
 TRAIN_LOCATION = TRAIN_LOCATION_TYPE.local
 
 # https://www.tensorflow.org/guide/distributed_training
+DISTRIBUTION_STRATEGY_TYPE = None
 DISTRIBUTION_STRATEGY_TYPE_VALUES = 'tf.distribute.MirroredStrategy tf.distribute.experimental.ParameterServerStrategy ' \
   'tf.distribute.experimental.MultiWorkerMirroredStrategy tf.distribute.experimental.CentralStorageStrategy ' \
   'tf.distribute.experimental.TPUStrategy'
@@ -196,6 +197,8 @@ def transform_row(row_dict, mean_dict, std_dict):
         else:
             # use normalized mean value if data is missing
             dict_without_label[field.name] = float(mean_dict[field.name] / std_dict[field.name])
+    elif NO_EMBEDDINGS and field.name.startswith('cat'):
+      dict_without_label.pop(field.name)
   return (dict_without_label, label)
 
 def read_bigquery(table_name):
@@ -425,7 +428,12 @@ def train_and_evaluate_keras_model(model, model_dir):
   checkpoints_dir= os.path.join(model_dir, "checkpoints")
   if not os.path.exists(checkpoints_dir):
       os.makedirs(checkpoints_dir)
-  checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
+
+  if DISTRIBUTION_STRATEGY_TYPE == 'tf.distribute.experimental.TPUStrategy':
+    # epoch and accuracy constants are not supported when training on TPU
+    checkpoints_file_path = checkpoints_dir + "/epochs_tpu.hdf5"
+  else:
+    checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
   # crashing https://github.com/tensorflow/tensorflow/issues/27688
   checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoints_file_path, verbose=1, mode='max')
   verbosity = 1 if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.local else 2
@@ -597,9 +605,6 @@ def get_args():
 
 def setup_environment(args):
   global TRAIN_LOCATION
-  #logging.warning(os.system('pip list'))
-  #logging.warning(os.system('env'))
-  #logging.warning('python version: ' + str(sys.version))
   os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = GOOGLE_APPLICATION_CREDENTIALS
   os.environ['PROJECT_ID'] = PROJECT_ID
 
@@ -635,6 +640,7 @@ def main():
     global TRAIN_LOCATION
     global DATASET_SOURCE
     global DATASET_SIZE
+    global DISTRIBUTION_STRATEGY_TYPE
     global NO_EMBEDDINGS
     args = get_args()
 
@@ -644,6 +650,9 @@ def main():
     logging.info('>>>>>>>>>>>>>>>>>>> trainer started <<<<<<<<<<<<<<<<<<<<<<<')
     logging.info('trainer called with following arguments:')
     logging.info(' '.join(sys.argv))
+
+    # Uncomment to see environment variables
+    # logging.warning(os.system('env'))
 
     # Uncomment this line to see Op device placement
     # tf.debugging.set_log_device_placement(True)
@@ -683,8 +692,8 @@ def main():
     logging.info('dataset_size: ' + str(DATASET_SIZE))
     NO_EMBEDDINGS = args.no_embeddings
     logging.info('no_embeddings: ' + str(NO_EMBEDDINGS))
-
-    logging.info('distribution_strategy: ' + str(type(distribution_strategy)))
+    DISTRIBUTION_STRATEGY_TYPE = args.distribution_strategy
+    logging.info('distribution_strategy: ' + DISTRIBUTION_STRATEGY_TYPE)
 
     model_dir = args.job_dir
     # if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.cloud and os.environ.get('HOSTNAME'):

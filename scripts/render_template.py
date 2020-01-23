@@ -52,7 +52,7 @@ elif args.distribution_strategy == "tf.distribute.experimental.MultiWorkerMirror
 elif args.distribution_strategy == "tf.distribute.experimental.TPUStrategy":
     num_workers=0
     num_gpus_per_worker=0
-    num_tpus=32 # minimal available number for central1-a
+    num_tpus=8 # minimal available number for central1-c  # https://cloud.google.com/tpu/docs/types-zones
 
 trainer_cmd_args = ' '.join(["--train-location=cloud"] + sys.argv[1:])
 

@@ -28,6 +28,7 @@ docker build -f Dockerfile -t $IMAGE_URI ./
 docker push $IMAGE_URI
 
 
+CLUSTER_NAME='criteo-cluster-tpu'
 export BUCKET_NAME="alekseyv-scalableai-dev-criteo-model-bucket"
 export REGION="us-central1-c"
 
@@ -57,7 +58,6 @@ if [ "$TENSORBOARD" = true ] ; then
     tensorboard --logdir=${MODEL_DIR}/logs --port=0 &
 fi
 
-CLUSTER_NAME='criteo-cluster'
 CURRENT_DATE_UTC=`date --utc -Iseconds`
 python scripts/render_template.py $@ --job-dir=${MODEL_DIR} | kubectl create -f -
 
