@@ -8,6 +8,7 @@ env.*
 trainer.egg-info
 trained
 model
+models
 dependencies
 dist
 

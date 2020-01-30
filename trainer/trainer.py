@@ -10,6 +10,7 @@ import os
 from six.moves import urllib
 import tempfile
 
+import time
 import math
 import numpy as np
 import pandas as pd
@@ -38,6 +39,27 @@ from tensorflow.python.platform import gfile
 import google.cloud.logging
 
 import argparse
+
+class BatchAccuracyAndLossSummaryCallback(tf.keras.callbacks.Callback):
+  def __init__(self, dataset_size):
+    self.update_freq = 50 if dataset_size == 'small' else 1000
+  def on_epoch_begin(self, epoch, logs=None):
+    self.epoch = epoch
+  def on_train_batch_end(self, batch, logs=None):
+    if batch % self.update_freq == 0:
+      if 'accuracy' in logs:
+        tf.summary.scalar('accuracy', logs['accuracy'], batch, description='epoch: {}'.format(self.epoch))
+        tf.summary.scalar('accuracy epoch: {}'.format(self.epoch), logs['accuracy'], batch, description='epoch: {}'.format(self.epoch))
+      if 'loss' in logs:
+        tf.summary.scalar('loss', logs['loss'], batch, description='epoch: {}'.format(self.epoch))
+        tf.summary.scalar('loss epoch: {}'.format(self.epoch), logs['loss'], batch, description='epoch: {}'.format(self.epoch))
+
+class TrainTimeCallback(tf.keras.callbacks.Callback):
+  def on_train_begin(self, logs=None):
+    self.start_training_time = datetime.datetime.now()
+
+  def on_train_end(self, logs=None):
+    logging.info('total train time: (hh:mm:ss.ms) {}'.format(datetime.datetime.now() - self.start_training_time))
 
 LOCATION = 'us'
 PROJECT_ID = "alekseyv-scalableai-dev" # TODO: replace with your project name
@@ -301,11 +323,14 @@ def create_categorical_feature_column(categorical_vocabulary_size_dict, key):
     dtype=tf.dtypes.string
   )
   if hash_bucket_size < 10:
+    logging.info('categorical column %s hash_bucket_size %d - creating indicator column', key, hash_bucket_size)
     return tf.feature_column.indicator_column(categorical_feature_column)
 
+  embedding_dimension = int(min(50, math.floor(6 * hash_bucket_size**0.25)))
   embedding_feature_column = tf.feature_column.embedding_column(
       categorical_feature_column,
-      int(min(50, math.floor(6 * hash_bucket_size**0.25))))
+      embedding_dimension)
+  logging.info('categorical column %s hash_bucket_size %d dimension %d', key, hash_bucket_size, embedding_dimension)
   return embedding_feature_column
 
 def create_linear_feature_columns():
@@ -354,8 +379,10 @@ def create_keras_model_functional():
     # Compile Keras model
     model.compile(
       # cannot use Adagrad with mirroredstartegy https://github.com/tensorflow/tensorflow/issues/19551
-      #optimizer=tf.optimizers.Adagrad(learning_rate=0.05),
-      optimizer=tf.optimizers.SGD(learning_rate=0.05),
+      optimizer=tf.optimizers.Adagrad(learning_rate=0.05),
+      #optimizer=tf.optimizers.SGD(learning_rate=0.05),
+      #optimizer=tf.optimizers.Adam(),
+      #optimizer=tf.optimizers.Adagrad(),
       loss=tf.keras.losses.BinaryCrossentropy(),
       metrics=['accuracy'])
     logging.info("model: " + str(model.summary()))
@@ -364,7 +391,6 @@ def create_keras_model_functional():
 def create_keras_model_functional_wide_and_deep():
     categorical_vocabulary_size_dict = get_vocabulary_size_dict()
     (feature_layer_inputs, feature_columns) = create_input_layer(categorical_vocabulary_size_dict)
-#    linear_feature_columns=create_linear_feature_columns()
     categorical_feature_columns=create_categorical_feature_columns(categorical_vocabulary_size_dict)
 
     wide = tf.keras.layers.DenseFeatures(categorical_feature_columns)(feature_layer_inputs)
@@ -426,19 +452,30 @@ def train_and_evaluate_keras_model(model, model_dir):
   tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, embeddings_freq=1, profile_batch=0)
 
   checkpoints_dir= os.path.join(model_dir, "checkpoints")
+  # crashing https://github.com/tensorflow/tensorflow/issues/27688
   if not os.path.exists(checkpoints_dir):
       os.makedirs(checkpoints_dir)
+
+  callbacks=[]
+  train_time_callback = TrainTimeCallback()
 
   if DISTRIBUTION_STRATEGY_TYPE == 'tf.distribute.experimental.TPUStrategy':
     # epoch and accuracy constants are not supported when training on TPU
     checkpoints_file_path = checkpoints_dir + "/epochs_tpu.hdf5"
+    checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoints_file_path, verbose=1, mode='max')
+    callbacks=[tensorboard_callback, checkpoint_callback, train_time_callback]
   else:
-    checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
-  # crashing https://github.com/tensorflow/tensorflow/issues/27688
-  checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoints_file_path, verbose=1, mode='max')
+    #checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
+    checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}.hdf5"
+    checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoints_file_path, verbose=1, mode='max')
+    file_writer = tf.summary.create_file_writer(log_dir + "/metrics")
+    file_writer.set_as_default()
+    batch_summary_callback = BatchAccuracyAndLossSummaryCallback(DATASET_SIZE)
+    callbacks=[tensorboard_callback, checkpoint_callback, batch_summary_callback, train_time_callback]
+
   verbosity = 1 if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.local else 2
   logging.info('training keras model')
-  model.fit(training_ds, epochs=EPOCHS, verbose=verbosity, callbacks=[tensorboard_callback, checkpoint_callback])
+  model.fit(training_ds, epochs=EPOCHS, verbose=verbosity, callbacks=callbacks)
   eval_ds = get_dataset('test')
   logging.info("done training keras model, evaluating model")
   loss, accuracy = model.evaluate(eval_ds, verbose=verbosity)
@@ -588,7 +625,7 @@ def get_args():
         '--no-embeddings',
         action='store_true',
         help='Ignored by this script.',
-        default=True)
+        default=False)
 
     args_parser.add_argument(
         '--tensorboard',
@@ -651,6 +688,9 @@ def main():
     logging.info('trainer called with following arguments:')
     logging.info(' '.join(sys.argv))
 
+    # Uncomment to force training on CPU
+    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+
     # Uncomment to see environment variables
     # logging.warning(os.system('env'))
 
@@ -693,7 +733,7 @@ def main():
     NO_EMBEDDINGS = args.no_embeddings
     logging.info('no_embeddings: ' + str(NO_EMBEDDINGS))
     DISTRIBUTION_STRATEGY_TYPE = args.distribution_strategy
-    logging.info('distribution_strategy: ' + DISTRIBUTION_STRATEGY_TYPE)
+    logging.info('distribution_strategy: ' + str(DISTRIBUTION_STRATEGY_TYPE))
 
     model_dir = args.job_dir
     # if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.cloud and os.environ.get('HOSTNAME'):
