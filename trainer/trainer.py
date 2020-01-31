@@ -379,8 +379,7 @@ def create_keras_model_functional():
     # Compile Keras model
     model.compile(
       # cannot use Adagrad with mirroredstartegy https://github.com/tensorflow/tensorflow/issues/19551
-      optimizer=tf.optimizers.Adagrad(learning_rate=0.05),
-      #optimizer=tf.optimizers.SGD(learning_rate=0.05),
+      optimizer=tf.optimizers.SGD(learning_rate=0.05),
       #optimizer=tf.optimizers.Adam(),
       #optimizer=tf.optimizers.Adagrad(),
       loss=tf.keras.losses.BinaryCrossentropy(),
@@ -465,8 +464,8 @@ def train_and_evaluate_keras_model(model, model_dir):
     checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoints_file_path, verbose=1, mode='max')
     callbacks=[tensorboard_callback, checkpoint_callback, train_time_callback]
   else:
-    #checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
-    checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}.hdf5"
+    checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
+    #checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}.hdf5" # accuracy fails for adagrad
     checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoints_file_path, verbose=1, mode='max')
     file_writer = tf.summary.create_file_writer(log_dir + "/metrics")
     file_writer.set_as_default()
