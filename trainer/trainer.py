@@ -457,7 +457,7 @@ def create_embedding_from_input(corpus_dict, name, input_layer):
   size = len(corpus_dict[name]) + 2
   dimension =  int(min(50, math.floor(6 * size**0.25)))
   logging.info('embedding name:{} size:{} dim:{}'.format(name, size, dimension))
-  embedding = tf.keras.layers.Embedding(size, dimension, name = name + '_embedding')(input_layer)
+  embedding = tf.keras.layers.Embedding(size, dimension, name = name + '_embedding', input_length=1)(input_layer)
   return embedding
 
 def create_keras_model_functional():
@@ -712,11 +712,6 @@ def get_args():
     args_parser.add_argument(
         '--model-name',
         help='model name, not used.')
-
-    args_parser.add_argument(
-        '--use-gpu-on-master',
-        action='store_true',
-        help='whether GPU accelerator should be attached, not used.')
 
     args_parser.add_argument(
         '--job-dir',
