@@ -41,6 +41,7 @@ import google.cloud.logging
 import argparse
 
 class BatchAccuracyAndLossSummaryCallback(tf.keras.callbacks.Callback):
+  # TODO: make it dist. strat. compartible
   def __init__(self, dataset_size):
     self.update_freq = 50 if dataset_size == 'small' else 1000
   def on_epoch_begin(self, epoch, logs=None):
@@ -70,7 +71,8 @@ DATASET_ID = 'criteo_kaggle'
 
 BATCH_SIZE = 128
 EPOCHS = 5
-NO_EMBEDDINGS = False
+EMBEDDINGS_MODE_TYPE = Enum('EMBEDDINGS_MODE_TYPE', 'none manual hashbucket vocabular')
+EMBEDDINGS_MODE = EMBEDDINGS_MODE_TYPE.hashbucket
 
 FULL_TRAIN_DATASET_SIZE = 36670642 # select count(1) from `alekseyv-scalableai-dev.criteo_kaggle.train`
 SMALL_TRAIN_DATASET_SIZE = 366715  # select count(1) from `alekseyv-scalableai-dev.criteo_kaggle.train_small`
@@ -85,7 +87,8 @@ DISTRIBUTION_STRATEGY_TYPE_VALUES = 'tf.distribute.MirroredStrategy tf.distribut
   'tf.distribute.experimental.MultiWorkerMirroredStrategy tf.distribute.experimental.CentralStorageStrategy ' \
   'tf.distribute.experimental.TPUStrategy'
 TRAINING_FUNCTION_VALUES = 'train_keras_sequential train_keras_functional train_keras_functional_wide_and_deep ' \
-  'train_keras_to_estimator_functional train_keras_to_estimator_sequential train_estimator train_estimator_wide_and_deep'
+  'train_keras_to_estimator_functional train_keras_to_estimator_sequential train_estimator train_estimator_wide_and_deep ' \
+  'train_keras_functional_no_feature_layer'
 
 DATASET_SIZE_TYPE = Enum('DATASET_SIZE_TYPE', 'full small')
 DATASET_SIZE = DATASET_SIZE_TYPE.small
@@ -136,7 +139,39 @@ CSV_SCHEMA = [
       bigquery.SchemaField("cat26", "STRING")
   ]
 
+def get_mean_and_std_dicts():
+  table_name = 'days' if DATASET_SIZE == DATASET_SIZE_TYPE.full else 'small'
+  client = bigquery.Client(project=PROJECT_ID)
+  query = """
+    select
+    AVG(int1) as avg_int1, STDDEV(int1) as std_int1,
+    AVG(int2) as avg_int2, STDDEV(int2) as std_int2,
+    AVG(int3) as avg_int3, STDDEV(int3) as std_int3,
+    AVG(int4) as avg_int4, STDDEV(int4) as std_int4,
+    AVG(int5) as avg_int5, STDDEV(int5) as std_int5,
+    AVG(int6) as avg_int6, STDDEV(int6) as std_int6,
+    AVG(int7) as avg_int7, STDDEV(int7) as std_int7,
+    AVG(int8) as avg_int8, STDDEV(int8) as std_int8,
+    AVG(int9) as avg_int9, STDDEV(int9) as std_int9,
+    AVG(int10) as avg_int10, STDDEV(int10) as std_int10,
+    AVG(int11) as avg_int11, STDDEV(int11) as std_int11,
+    AVG(int12) as avg_int12, STDDEV(int12) as std_int12,
+    AVG(int13) as avg_int13, STDDEV(int13) as std_int13
+    from `alekseyv-scalableai-dev.criteo_kaggle.{table_name}`
+  """.format(table_name = table_name)
+  query_job = client.query(
+      query,
+      location=LOCATION,
+  )  # API request - starts the query
+
+  df = query_job.to_dataframe()
+
+  mean_dict = dict((field[0].replace('avg_', ''), df[field[0]][0]) for field in df.items() if field[0].startswith('avg'))
+  std_dict = dict((field[0].replace('std_', ''), df[field[0]][0]) for field in df.items() if field[0].startswith('std'))
+  return (mean_dict, std_dict)
+
 def get_vocabulary_size_dict():
+  table_name = 'days' if DATASET_SIZE == DATASET_SIZE_TYPE.full else 'small'
   client = bigquery.Client(project=PROJECT_ID)
   query = """
     SELECT
@@ -167,8 +202,8 @@ def get_vocabulary_size_dict():
     COUNT(DISTINCT cat25) as cat25,
     COUNT(DISTINCT cat26) as cat26
     FROM
-      `alekseyv-scalableai-dev.criteo_kaggle.days`
-  """
+      `alekseyv-scalableai-dev.criteo_kaggle.{table_name}`
+  """.format(table_name = table_name)
   query_job = client.query(
       query,
       location=LOCATION,
@@ -178,37 +213,54 @@ def get_vocabulary_size_dict():
   dictionary = dict((field[0], df[field[0]][0]) for field in df.items())
   return dictionary
 
-def get_mean_and_std_dicts():
+def get_corpus_dict():
+  table_name = 'days' if DATASET_SIZE == DATASET_SIZE_TYPE.full else 'small'
   client = bigquery.Client(project=PROJECT_ID)
   query = """
     select
-    AVG(int1) as avg_int1, STDDEV(int1) as std_int1,
-    AVG(int2) as avg_int2, STDDEV(int2) as std_int2,
-    AVG(int3) as avg_int3, STDDEV(int3) as std_int3,
-    AVG(int4) as avg_int4, STDDEV(int4) as std_int4,
-    AVG(int5) as avg_int5, STDDEV(int5) as std_int5,
-    AVG(int6) as avg_int6, STDDEV(int6) as std_int6,
-    AVG(int7) as avg_int7, STDDEV(int7) as std_int7,
-    AVG(int8) as avg_int8, STDDEV(int8) as std_int8,
-    AVG(int9) as avg_int9, STDDEV(int9) as std_int9,
-    AVG(int10) as avg_int10, STDDEV(int10) as std_int10,
-    AVG(int11) as avg_int11, STDDEV(int11) as std_int11,
-    AVG(int12) as avg_int12, STDDEV(int12) as std_int12,
-    AVG(int13) as avg_int13, STDDEV(int13) as std_int13
-    from `alekseyv-scalableai-dev.criteo_kaggle.days`
-  """
+    cat_name,
+    cat_value,
+    cat_index
+    from `alekseyv-scalableai-dev.criteo_kaggle.{table_name}_corpus`
+  """.format(table_name = table_name)
   query_job = client.query(
       query,
       location="US",
   )  # API request - starts the query
 
   df = query_job.to_dataframe()
+  corpus = dict()
+  for _, row in df.iterrows():
+    cat_name = row[0]
+    cat_value = row[1]
+    cat_index = row[2]
+    if not cat_name in corpus:
+      corpus[cat_name] = dict()
+    if cat_value is None:
+      cat_value = ''
+    corpus[cat_name][cat_value] = cat_index
+  return corpus
 
-  mean_dict = dict((field[0].replace('avg_', ''), df[field[0]][0]) for field in df.items() if field[0].startswith('avg'))
-  std_dict = dict((field[0].replace('std_', ''), df[field[0]][0]) for field in df.items() if field[0].startswith('std'))
-  return (mean_dict, std_dict)
+def corpus_to_lookuptable(corpus):
+  lookup_dict = dict()
+  for key, value in corpus.items():
+    initializer = tf.lookup.KeyValueTensorInitializer(
+      list(value.keys()),
+      list(value.values()),
+      key_dtype=tf.string,
+      value_dtype=tf.int64)
+    # cat_index in corpus starts with 1, reserving 0 for out of vocabulary values
+    lookup_table = tf.lookup.StaticHashTable(initializer, 0)
+    lookup_dict[key] = lookup_table
+  return lookup_dict
 
-def transform_row(row_dict, mean_dict, std_dict):
+def get_corpus():
+  if EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.manual:
+    return corpus_to_lookuptable(get_corpus_dict())
+  else:
+    return dict()
+
+def transform_row(row_dict, mean_dict, std_dict, corpus):
   dict_without_label = dict(row_dict)
   label = dict_without_label.pop('label')
   for field in CSV_SCHEMA:
@@ -219,8 +271,18 @@ def transform_row(row_dict, mean_dict, std_dict):
         else:
             # use normalized mean value if data is missing
             dict_without_label[field.name] = float(mean_dict[field.name] / std_dict[field.name])
-    elif NO_EMBEDDINGS and field.name.startswith('cat'):
-      dict_without_label.pop(field.name)
+    elif field.name.startswith('cat'):
+      if EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.none:
+        dict_without_label.pop(field.name)
+      elif EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.manual:
+        cat = dict_without_label[field.name]
+        if cat is None:
+          cat = ''
+        cat_index = corpus[field.name].lookup(cat)
+        if cat_index is None:
+          tf.print('not found for {}'.format(field.name))
+          cat_index = tf.constant(-1)
+        dict_without_label[field.name] = cat_index
   return (dict_without_label, label)
 
 def read_bigquery(table_name):
@@ -228,6 +290,7 @@ def read_bigquery(table_name):
     table_name += '_small'
 
   (mean_dict, std_dict) = get_mean_and_std_dicts()
+  corpus = get_corpus()
   requested_streams_count = 10
   tensorflow_io_bigquery_client = BigQueryClient()
   read_session = tensorflow_io_bigquery_client.read_session(
@@ -249,7 +312,7 @@ def read_bigquery(table_name):
             cycle_length=streams_count64,
             num_parallel_calls=streams_count64)
 
-  transformed_ds = dataset.map (lambda row: transform_row(row, mean_dict, std_dict), num_parallel_calls=streams_count) \
+  transformed_ds = dataset.map (lambda row: transform_row(row, mean_dict, std_dict, corpus), num_parallel_calls=streams_count) \
     .shuffle(10000) \
     .batch(BATCH_SIZE) \
     .prefetch(100)
@@ -263,10 +326,10 @@ def read_bigquery(table_name):
   # return transformed_ds.with_options(options)
   return transformed_ds
 
-def transofrom_row_gcs(row_tuple, mean_dict, std_dict):
+def transofrom_row_gcs(row_tuple, mean_dict, std_dict, corpus):
     row_dict = dict(zip(list(field.name for field in CSV_SCHEMA) + ['row_hash'], list(row_tuple)))
     row_dict.pop('row_hash')
-    return transform_row(row_dict, mean_dict, std_dict)
+    return transform_row(row_dict, mean_dict, std_dict, corpus)
 
 
 def _get_file_names(file_pattern):
@@ -299,8 +362,9 @@ def read_gcs(table_name):
           cycle_length=num_parallel_calls,
           num_parallel_calls=num_parallel_calls)
 
+  corpus = get_corpus()
   (mean_dict, std_dict) = get_mean_and_std_dicts()
-  transformed_ds = dataset.map (lambda *row_tuple: transofrom_row_gcs(row_tuple, mean_dict, std_dict)) \
+  transformed_ds = dataset.map (lambda *row_tuple: transofrom_row_gcs(row_tuple, mean_dict, std_dict, corpus)) \
     .shuffle(10000) \
     .batch(BATCH_SIZE) \
     .prefetch(100)
@@ -337,7 +401,7 @@ def create_linear_feature_columns():
   return list(tf.feature_column.numeric_column(field.name, dtype=tf.dtypes.float32)  for field in CSV_SCHEMA if field.field_type == 'INTEGER' and field.name != 'label')
 
 def create_categorical_feature_columns(categorical_vocabulary_size_dict):
-  if NO_EMBEDDINGS:
+  if EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.none:
     return []
   else:
     return list(create_categorical_feature_column(categorical_vocabulary_size_dict, key) for key, _ in categorical_vocabulary_size_dict.items())
@@ -364,6 +428,13 @@ def create_input_layer(categorical_vocabulary_size_dict):
 
     return (input_layers, numeric_feature_columns + categorical_feature_columns)
 
+def create_embedding_from_input(categorical_vocabulary_size_dict, name, input_layer):
+  size = categorical_vocabulary_size_dict[name] + 2
+  dimension =  int(min(50, math.floor(6 * size**0.25)))
+  logging.info('embedding name:{} size:{} dim:{}'.format(name, size, dimension))
+  embedding = tf.keras.layers.Embedding(size, dimension, name = name + '_embedding')(input_layer)
+  return embedding
+
 def create_keras_model_functional():
     categorical_vocabulary_size_dict = get_vocabulary_size_dict()
     (feature_layer_inputs, feature_columns) = create_input_layer(categorical_vocabulary_size_dict)
@@ -386,6 +457,48 @@ def create_keras_model_functional():
       metrics=['accuracy'])
     logging.info("model: " + str(model.summary()))
     return model
+
+def create_keras_model_functional_no_feature_layer():
+  categorical_vocabulary_size_dict = get_vocabulary_size_dict()
+
+  categorical_input_with_names = list((field.name, tf.keras.layers.Input(shape=[1], name = field.name, dtype=tf.int32))
+    for field in CSV_SCHEMA if field.field_type == 'STRING' and field.name != 'label')
+  categorical_inputs = list(input_layer
+    for (name, input_layer) in categorical_input_with_names)
+  categorical_embeddings = list(create_embedding_from_input(categorical_vocabulary_size_dict, name, input_layer)
+    for (name, input_layer) in categorical_input_with_names)
+
+  numerical_inputs = list(tf.keras.layers.Input(shape=[1], name = field.name, dtype=tf.float32)
+    for field in CSV_SCHEMA if field.field_type == 'INTEGER' and field.name != 'label')
+
+  categorical_combined = tf.keras.layers.concatenate(categorical_embeddings)
+  x = tf.keras.layers.Flatten()(categorical_combined)
+  x = tf.keras.layers.concatenate([x] + numerical_inputs)
+  x = tf.keras.layers.Dense(2560, activation=tf.nn.relu)(x)
+  x = tf.keras.layers.Dense(1024, activation=tf.nn.relu)(x)
+  x = tf.keras.layers.Dense(256, activation=tf.nn.relu)(x)
+
+  outputs = tf.keras.layers.Dense(1, activation=tf.nn.sigmoid)(x)
+  model = tf.keras.Model(inputs=categorical_inputs + numerical_inputs, outputs=outputs)
+
+  # Compile Keras model
+  model.compile(
+    # cannot use Adagrad with mirroredstartegy https://github.com/tensorflow/tensorflow/issues/19551
+    optimizer=tf.optimizers.SGD(learning_rate=0.05),
+    #optimizer=tf.optimizers.Adam(),
+    #optimizer=tf.optimizers.Adagrad(),
+    loss=tf.keras.losses.BinaryCrossentropy(),
+    metrics=['accuracy'])
+  logging.info("model: " + str(model.summary()))
+
+  # Testing read
+  dataset = read_bigquery('train').take(1)
+  row_index = 0
+  for row in dataset:
+    print("row %d: %s" % (row_index, row))
+    row_index += 1
+
+  return model
 
 def create_keras_model_functional_wide_and_deep():
     categorical_vocabulary_size_dict = get_vocabulary_size_dict()
@@ -464,13 +577,14 @@ def train_and_evaluate_keras_model(model, model_dir):
     checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoints_file_path, verbose=1, mode='max')
     callbacks=[tensorboard_callback, checkpoint_callback, train_time_callback]
   else:
-    checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
-    #checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}.hdf5" # accuracy fails for adagrad
+    #checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
+    checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}.hdf5" # accuracy fails for adagrad
     checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoints_file_path, verbose=1, mode='max')
     file_writer = tf.summary.create_file_writer(log_dir + "/metrics")
     file_writer.set_as_default()
-    batch_summary_callback = BatchAccuracyAndLossSummaryCallback(DATASET_SIZE)
-    callbacks=[tensorboard_callback, checkpoint_callback, batch_summary_callback, train_time_callback]
+    #batch_summary_callback = BatchAccuracyAndLossSummaryCallback(DATASET_SIZE)
+    #callbacks=[tensorboard_callback, checkpoint_callback, batch_summary_callback, train_time_callback]
+    callbacks=[tensorboard_callback, checkpoint_callback, train_time_callback]
 
   verbosity = 1 if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.local else 2
   logging.info('training keras model')
@@ -500,6 +614,9 @@ def train_keras_sequential(strategy, model_dir):
 
 def train_keras_functional(strategy, model_dir):
   train_and_evaluate_keras_model(create_keras_model_functional(), model_dir)
+
+def train_keras_functional_no_feature_layer(strategy, model_dir):
+  train_and_evaluate_keras_model(create_keras_model_functional_no_feature_layer(), model_dir)
 
 def train_keras_functional_wide_and_deep(strategy, model_dir):
   train_and_evaluate_keras_model(create_keras_model_functional_wide_and_deep(), model_dir)
@@ -677,7 +794,7 @@ def main():
     global DATASET_SOURCE
     global DATASET_SIZE
     global DISTRIBUTION_STRATEGY_TYPE
-    global NO_EMBEDDINGS
+    global EMBEDDINGS_MODE
     args = get_args()
 
     logging_client = google.cloud.logging.Client()
@@ -729,8 +846,6 @@ def main():
     logging.info('dataset_source: ' + str(DATASET_SOURCE))
     DATASET_SIZE = DATASET_SIZE_TYPE[args.dataset_size]
     logging.info('dataset_size: ' + str(DATASET_SIZE))
-    NO_EMBEDDINGS = args.no_embeddings
-    logging.info('no_embeddings: ' + str(NO_EMBEDDINGS))
     DISTRIBUTION_STRATEGY_TYPE = args.distribution_strategy
     logging.info('distribution_strategy: ' + str(DISTRIBUTION_STRATEGY_TYPE))
 
@@ -742,6 +857,14 @@ def main():
 
     training_function = getattr(sys.modules[__name__], args.training_function)
     logging.info('training_function: ' + str(training_function))
+
+    if args.no_embeddings:
+      EMBEDDINGS_MODE = EMBEDDINGS_MODE_TYPE.none
+    elif args.training_function == 'train_keras_functional_no_feature_layer':
+      EMBEDDINGS_MODE = EMBEDDINGS_MODE_TYPE.manual
+    else:
+      EMBEDDINGS_MODE = EMBEDDINGS_MODE_TYPE.hashbucket
+    logging.info('embeddings_mode: ' + str(EMBEDDINGS_MODE))
 
     BATCH_SIZE = args.batch_size
     EPOCHS = args.num_epochs
