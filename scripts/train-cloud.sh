@@ -38,9 +38,6 @@ case $i in
     --tensorboard)
     TENSORBOARD=true
     ;;
-    --use-gpu-on-master)
-    CONFIG="--master-accelerator=count=2,type=nvidia-tesla-k80"
-    ;;
     --model-name=*)
     MODEL_NAME="${i#*=}"
     ;;

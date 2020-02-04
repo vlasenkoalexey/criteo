@@ -43,6 +43,8 @@ import argparse
 class BatchAccuracyAndLossSummaryCallback(tf.keras.callbacks.Callback):
   # TODO: make it dist. strat. compartible
   def __init__(self, dataset_size):
+    # Callback should only write summaries on the chief when in a Multi-Worker setting.
+    self._chief_worker_only = True
     self.update_freq = 50 if dataset_size == 'small' else 1000
   def on_epoch_begin(self, epoch, logs=None):
     self.epoch = epoch
@@ -71,6 +73,7 @@ DATASET_ID = 'criteo_kaggle'
 
 BATCH_SIZE = 128
 EPOCHS = 5
+EMBEDDINGS_MODE_TYPE_VALUES = 'none manual hashbucket vocabular'
 EMBEDDINGS_MODE_TYPE = Enum('EMBEDDINGS_MODE_TYPE', 'none manual hashbucket vocabular')
 EMBEDDINGS_MODE = EMBEDDINGS_MODE_TYPE.hashbucket
 
@@ -255,7 +258,7 @@ def corpus_to_lookuptable(corpus):
   return lookup_dict
 
 def get_corpus():
-  if EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.manual:
+  if EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.manual or EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.vocabular:
     return corpus_to_lookuptable(get_corpus_dict())
   else:
     return dict()
@@ -378,9 +381,8 @@ def get_max_steps():
   dataset_size = FULL_TRAIN_DATASET_SIZE if DATASET_SIZE == DATASET_SIZE_TYPE.full else SMALL_TRAIN_DATASET_SIZE
   return EPOCHS * dataset_size // BATCH_SIZE
 
-def create_categorical_feature_column(categorical_vocabulary_size_dict, key):
+def create_categorical_feature_column_with_hash_bucket(categorical_vocabulary_size_dict, key):
   hash_bucket_size = min(categorical_vocabulary_size_dict[key], 100000)
-  # TODO: consider using categorical_column_with_vocabulary_list
   categorical_feature_column = tf.feature_column.categorical_column_with_hash_bucket(
     key,
     hash_bucket_size,
@@ -397,14 +399,37 @@ def create_categorical_feature_column(categorical_vocabulary_size_dict, key):
   logging.info('categorical column %s hash_bucket_size %d dimension %d', key, hash_bucket_size, embedding_dimension)
   return embedding_feature_column
 
+def create_categorical_feature_column_with_vocabulary_list(categorical_vocabulary_size_dict, corpus_dict, key):
+  corpus_size = len(corpus_dict)
+  categorical_feature_column = tf.feature_column.categorical_column_with_vocabulary_list(
+    key,
+    list(corpus_dict.keys()),
+    dtype=tf.dtypes.string,
+    num_oov_buckets=corpus_size
+  )
+
+  embedding_dimension = int(min(50, math.floor(6 * corpus_size**0.25)))
+  embedding_feature_column = tf.feature_column.embedding_column(
+      categorical_feature_column,
+      embedding_dimension)
+  logging.info('categorical column %s corpus_size %d dimension %d', key, corpus_size, embedding_dimension)
+  return embedding_feature_column
+
 def create_linear_feature_columns():
   return list(tf.feature_column.numeric_column(field.name, dtype=tf.dtypes.float32)  for field in CSV_SCHEMA if field.field_type == 'INTEGER' and field.name != 'label')
 
 def create_categorical_feature_columns(categorical_vocabulary_size_dict):
   if EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.none:
     return []
+  elif EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.hashbucket:
+    return list(create_categorical_feature_column_with_hash_bucket(categorical_vocabulary_size_dict, key)
+      for key, _ in categorical_vocabulary_size_dict.items())
+  elif EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.vocabular:
+    corpus_dict = get_corpus_dict()
+    return list(create_categorical_feature_column_with_vocabulary_list(categorical_vocabulary_size_dict, corpus_dict, key)
+      for key, _ in categorical_vocabulary_size_dict.items())
   else:
-    return list(create_categorical_feature_column(categorical_vocabulary_size_dict, key) for key, _ in categorical_vocabulary_size_dict.items())
+    raise ValueError('invalid EMBEDDINGS_MODE: {}'.format(EMBEDDINGS_MODE))
 
 def create_feature_columns(categorical_vocabulary_size_dict):
   feature_columns = []
@@ -428,8 +453,8 @@ def create_input_layer(categorical_vocabulary_size_dict):
 
     return (input_layers, numeric_feature_columns + categorical_feature_columns)
 
-def create_embedding_from_input(categorical_vocabulary_size_dict, name, input_layer):
-  size = categorical_vocabulary_size_dict[name] + 2
+def create_embedding_from_input(corpus_dict, name, input_layer):
+  size = len(corpus_dict[name]) + 2
   dimension =  int(min(50, math.floor(6 * size**0.25)))
   logging.info('embedding name:{} size:{} dim:{}'.format(name, size, dimension))
   embedding = tf.keras.layers.Embedding(size, dimension, name = name + '_embedding')(input_layer)
@@ -459,13 +484,12 @@ def create_keras_model_functional():
     return model
 
 def create_keras_model_functional_no_feature_layer():
-  categorical_vocabulary_size_dict = get_vocabulary_size_dict()
-
+  corpus_dict = get_corpus_dict()
   categorical_input_with_names = list((field.name, tf.keras.layers.Input(shape=[1], name = field.name, dtype=tf.int32))
     for field in CSV_SCHEMA if field.field_type == 'STRING' and field.name != 'label')
   categorical_inputs = list(input_layer
     for (name, input_layer) in categorical_input_with_names)
-  categorical_embeddings = list(create_embedding_from_input(categorical_vocabulary_size_dict, name, input_layer)
+  categorical_embeddings = list(create_embedding_from_input(corpus_dict, name, input_layer)
     for (name, input_layer) in categorical_input_with_names)
 
   numerical_inputs = list(tf.keras.layers.Input(shape=[1], name = field.name, dtype=tf.float32)
@@ -490,13 +514,6 @@ def create_keras_model_functional_no_feature_layer():
     loss=tf.keras.losses.BinaryCrossentropy(),
     metrics=['accuracy'])
   logging.info("model: " + str(model.summary()))
-
-  # Testing read
-  dataset = read_bigquery('train').take(1)
-  row_index = 0
-  for row in dataset:
-    print("row %d: %s" % (row_index, row))
-    row_index += 1
 
   return model
 
@@ -577,14 +594,18 @@ def train_and_evaluate_keras_model(model, model_dir):
     checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoints_file_path, verbose=1, mode='max')
     callbacks=[tensorboard_callback, checkpoint_callback, train_time_callback]
   else:
-    #checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
-    checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}.hdf5" # accuracy fails for adagrad
+    if EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.manual:
+      # accuracy fails for adagrad
+      # for some reason accuracy is not available for EMBEDDINGS_MODE_TYPE.manual
+      checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}.hdf5"
+    else:
+      checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
     checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoints_file_path, verbose=1, mode='max')
     file_writer = tf.summary.create_file_writer(log_dir + "/metrics")
     file_writer.set_as_default()
-    #batch_summary_callback = BatchAccuracyAndLossSummaryCallback(DATASET_SIZE)
-    #callbacks=[tensorboard_callback, checkpoint_callback, batch_summary_callback, train_time_callback]
-    callbacks=[tensorboard_callback, checkpoint_callback, train_time_callback]
+    batch_summary_callback = BatchAccuracyAndLossSummaryCallback(DATASET_SIZE)
+    callbacks=[tensorboard_callback, checkpoint_callback, batch_summary_callback, train_time_callback]
+    #callbacks=[tensorboard_callback, checkpoint_callback, train_time_callback]
 
   verbosity = 1 if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.local else 2
   logging.info('training keras model')
@@ -738,10 +759,10 @@ def get_args():
         type=int)
 
     args_parser.add_argument(
-        '--no-embeddings',
-        action='store_true',
-        help='Ignored by this script.',
-        default=False)
+        '--embeddings-mode',
+        help='Embeddings mode.',
+        choices=EMBEDDINGS_MODE_TYPE_VALUES,
+        default='hashbucket')
 
     args_parser.add_argument(
         '--tensorboard',
@@ -753,6 +774,12 @@ def get_args():
         '--ai-platform-mode',
         help='Ignored by this script.',
         default=None)
+
+    args_parser.add_argument(
+        '--no-gpu',
+        action='store_true',
+        help='Disabling GPUs - forces training to happen on CPU.',
+        default=False)
 
     return args_parser.parse_args()
 
@@ -804,8 +831,9 @@ def main():
     logging.info('trainer called with following arguments:')
     logging.info(' '.join(sys.argv))
 
-    # Uncomment to force training on CPU
-    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+    if args.no_gpu:
+      os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+      logging.info('forcing no GPU')
 
     # Uncomment to see environment variables
     # logging.warning(os.system('env'))
@@ -858,12 +886,9 @@ def main():
     training_function = getattr(sys.modules[__name__], args.training_function)
     logging.info('training_function: ' + str(training_function))
 
-    if args.no_embeddings:
-      EMBEDDINGS_MODE = EMBEDDINGS_MODE_TYPE.none
-    elif args.training_function == 'train_keras_functional_no_feature_layer':
+    EMBEDDINGS_MODE = EMBEDDINGS_MODE_TYPE[args.embeddings_mode]
+    if args.training_function == 'train_keras_functional_no_feature_layer':
       EMBEDDINGS_MODE = EMBEDDINGS_MODE_TYPE.manual
-    else:
-      EMBEDDINGS_MODE = EMBEDDINGS_MODE_TYPE.hashbucket
     logging.info('embeddings_mode: ' + str(EMBEDDINGS_MODE))
 
     BATCH_SIZE = args.batch_size
