@@ -381,8 +381,9 @@ def get_max_steps():
   dataset_size = FULL_TRAIN_DATASET_SIZE if DATASET_SIZE == DATASET_SIZE_TYPE.full else SMALL_TRAIN_DATASET_SIZE
   return EPOCHS * dataset_size // BATCH_SIZE
 
-def create_categorical_feature_column_with_hash_bucket(categorical_vocabulary_size_dict, key):
-  hash_bucket_size = min(categorical_vocabulary_size_dict[key], 100000)
+def create_categorical_feature_column_with_hash_bucket(corpus_dict, key):
+  corpus_size = len(corpus_dict[key])
+  hash_bucket_size = min(corpus_size, 100000)
   categorical_feature_column = tf.feature_column.categorical_column_with_hash_bucket(
     key,
     hash_bucket_size,
@@ -399,11 +400,11 @@ def create_categorical_feature_column_with_hash_bucket(categorical_vocabulary_si
   logging.info('categorical column %s hash_bucket_size %d dimension %d', key, hash_bucket_size, embedding_dimension)
   return embedding_feature_column
 
-def create_categorical_feature_column_with_vocabulary_list(categorical_vocabulary_size_dict, corpus_dict, key):
-  corpus_size = len(corpus_dict)
+def create_categorical_feature_column_with_vocabulary_list(corpus_dict, key):
+  corpus_size = len(corpus_dict[key])
   categorical_feature_column = tf.feature_column.categorical_column_with_vocabulary_list(
     key,
-    list(corpus_dict.keys()),
+    list(corpus_dict[key].keys()),
     dtype=tf.dtypes.string,
     num_oov_buckets=corpus_size
   )
@@ -418,32 +419,33 @@ def create_categorical_feature_column_with_vocabulary_list(categorical_vocabular
 def create_linear_feature_columns():
   return list(tf.feature_column.numeric_column(field.name, dtype=tf.dtypes.float32)  for field in CSV_SCHEMA if field.field_type == 'INTEGER' and field.name != 'label')
 
-def create_categorical_feature_columns(categorical_vocabulary_size_dict):
+def create_categorical_feature_columns():
   if EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.none:
     return []
   elif EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.hashbucket:
-    return list(create_categorical_feature_column_with_hash_bucket(categorical_vocabulary_size_dict, key)
-      for key, _ in categorical_vocabulary_size_dict.items())
+    corpus_dict = get_corpus_dict()
+    return list(create_categorical_feature_column_with_hash_bucket(corpus_dict, key)
+      for key, _ in corpus_dict.items())
   elif EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.vocabular:
     corpus_dict = get_corpus_dict()
-    return list(create_categorical_feature_column_with_vocabulary_list(categorical_vocabulary_size_dict, corpus_dict, key)
-      for key, _ in categorical_vocabulary_size_dict.items())
+    return list(create_categorical_feature_column_with_vocabulary_list(corpus_dict, key)
+      for key, _ in corpus_dict.items())
   else:
     raise ValueError('invalid EMBEDDINGS_MODE: {}'.format(EMBEDDINGS_MODE))
 
-def create_feature_columns(categorical_vocabulary_size_dict):
+def create_feature_columns():
   feature_columns = []
   feature_columns.extend(create_linear_feature_columns())
-  feature_columns.extend(create_categorical_feature_columns(categorical_vocabulary_size_dict))
+  feature_columns.extend(create_categorical_feature_columns())
   return feature_columns
 
-def create_input_layer(categorical_vocabulary_size_dict):
+def create_input_layer():
     numeric_feature_columns = create_linear_feature_columns()
     numerical_input_layers = {
        feature_column.name: tf.keras.layers.Input(name=feature_column.name, shape=(1,), dtype=tf.float32)
        for feature_column in numeric_feature_columns
     }
-    categorical_feature_columns = create_categorical_feature_columns(categorical_vocabulary_size_dict)
+    categorical_feature_columns = create_categorical_feature_columns()
     categorical_input_layers = {
        feature_column.categorical_column.name: tf.keras.layers.Input(name=feature_column.categorical_column.name, shape=(), dtype=tf.string)
        for feature_column in categorical_feature_columns
@@ -461,8 +463,7 @@ def create_embedding_from_input(corpus_dict, name, input_layer):
   return embedding
 
 def create_keras_model_functional():
-    categorical_vocabulary_size_dict = get_vocabulary_size_dict()
-    (feature_layer_inputs, feature_columns) = create_input_layer(categorical_vocabulary_size_dict)
+    (feature_layer_inputs, feature_columns) = create_input_layer()
     feature_layer = tf.keras.layers.DenseFeatures(feature_columns)
     feature_layer_outputs = feature_layer(feature_layer_inputs)
     x = tf.keras.layers.Dense(2560, activation=tf.nn.relu)(feature_layer_outputs)
@@ -518,9 +519,8 @@ def create_keras_model_functional_no_feature_layer():
   return model
 
 def create_keras_model_functional_wide_and_deep():
-    categorical_vocabulary_size_dict = get_vocabulary_size_dict()
-    (feature_layer_inputs, feature_columns) = create_input_layer(categorical_vocabulary_size_dict)
-    categorical_feature_columns=create_categorical_feature_columns(categorical_vocabulary_size_dict)
+    (feature_layer_inputs, feature_columns) = create_input_layer()
+    categorical_feature_columns=create_categorical_feature_columns()
 
     wide = tf.keras.layers.DenseFeatures(categorical_feature_columns)(feature_layer_inputs)
 
@@ -547,8 +547,7 @@ def create_keras_model_functional_wide_and_deep():
     return model
 
 def create_keras_model_sequential():
-  categorical_vocabulary_size_dict = get_vocabulary_size_dict()
-  feature_columns = create_feature_columns(categorical_vocabulary_size_dict)
+  feature_columns = create_feature_columns()
 
   feature_layer = tf.keras.layers.DenseFeatures(feature_columns, name="feature_layer")
   Dense = tf.keras.layers.Dense
@@ -653,8 +652,7 @@ def train_estimator(strategy, model_dir):
   config = tf.estimator.RunConfig(
           train_distribute=strategy,
           eval_distribute=strategy)
-  categorical_vocabulary_size_dict = get_vocabulary_size_dict()
-  feature_columns = create_feature_columns(categorical_vocabulary_size_dict)
+  feature_columns = create_feature_columns()
   estimator = tf.estimator.DNNClassifier(
       optimizer=tf.optimizers.SGD(learning_rate=0.05),
       feature_columns=feature_columns,
@@ -676,9 +674,8 @@ def train_estimator_wide_and_deep(strategy, model_dir):
   config = tf.estimator.RunConfig(
           train_distribute=strategy,
           eval_distribute=strategy)
-  categorical_vocabulary_size_dict = get_vocabulary_size_dict()
   linear_feature_columns=create_linear_feature_columns()
-  categorical_feature_columns=create_categorical_feature_columns(categorical_vocabulary_size_dict)
+  categorical_feature_columns=create_categorical_feature_columns()
   estimator = tf.estimator.DNNLinearCombinedClassifier(
       dnn_optimizer=tf.optimizers.SGD(learning_rate=0.05),
       linear_optimizer=tf.optimizers.SGD(learning_rate=0.05),
