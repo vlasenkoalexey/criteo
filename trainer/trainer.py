@@ -58,6 +58,18 @@ class BatchAccuracyAndLossSummaryCallback(tf.keras.callbacks.Callback):
         tf.summary.scalar('loss epoch: {}'.format(self.epoch), logs['loss'], batch, description='epoch: {}'.format(self.epoch))
 
 class TrainTimeCallback(tf.keras.callbacks.Callback):
+  def on_epoch_begin(self, epoch, logs=None):
+    self.epoch_start_time = datetime.datetime.now()
+
+  def on_epoch_end(self, epoch, logs=None):
+    logging.info('\nepoch train time: (hh:mm:ss.ms) {}'.format(datetime.datetime.now() - self.epoch_start_time))
+    if not self.params is None:
+      if 'steps' in self.params:
+        epoch_milliseconds = (datetime.datetime.now() - self.epoch_start_time).total_seconds() * 1000
+        logging.info('{} ms/step'.format(epoch_milliseconds / self.params['steps']))
+      if BATCH_SIZE is not None:
+        logging.info('{} microseconds/example'.format(1000 * epoch_milliseconds  / self.params['steps'] / BATCH_SIZE))
+
   def on_train_begin(self, logs=None):
     self.start_training_time = datetime.datetime.now()
 

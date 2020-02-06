@@ -28,11 +28,17 @@ args_parser.add_argument(
     help='Distribution strategy to use.',
     choices=DISTRIBUTION_STRATEGY_TYPE_VALUES.split(' '))
 
+args_parser.add_argument(
+    '--no-gpu',
+    action='store_true',
+    help='Disabling GPUs - forces training to happen on CPU.',
+    default=False)
+
 args, unknown = args_parser.parse_known_args()
 
 num_ps=0
 num_workers=0
-num_gpus_per_worker=0
+num_gpus_per_worker=0 if args.no_gpu else 1
 num_tpus=0
 
 if args.distribution_strategy == "tf.distribute.MirroredStrategy":
@@ -41,7 +47,7 @@ if args.distribution_strategy == "tf.distribute.MirroredStrategy":
 elif args.distribution_strategy == "tf.distribute.experimental.CentralStorageStrategy":
     num_ps=1 # see https://b.corp.google.com/issues/148108526 why PS is necessary
     num_workers=0
-    num_gpus_per_worker=0
+    num_gpus_per_worker=2
 elif args.distribution_strategy == "tf.distribute.experimental.ParameterServerStrategy":
     num_ps=1
     num_workers=2
