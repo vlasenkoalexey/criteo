@@ -9,7 +9,6 @@ trainer.egg-info
 trained
 model
 models
-dependencies
 dist
 
 # To prevent storing dev/temporary container data

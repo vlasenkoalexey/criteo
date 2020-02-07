@@ -3,13 +3,16 @@
 # https://pantheon.corp.google.com/gcr/images/deeplearning-platform-release/GLOBAL/tf2-cpu
 #FROM ubuntu:cosmic
 #FROM tensorflow/tensorflow:2.0.0-gpu
-#FROM tensorflow/tensorflow:2.1.0rc2-gpu
-FROM nvidia/cuda:10.1-cudnn7-runtime-ubuntu18.04
+#FROM tensorflow/tensorflow:2.1.0
+#FROM nvidia/cuda:10.1-cudnn7-devel-ubuntu18.04
+FROM tensorflow/tensorflow:nightly-gpu-py3
+
+# python is python3.7 and pip is pip3.7 in gcr.io/deeplearning-platform-release/tf2-gpu.2-1
 
 # Installs necessary dependencies.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-	 python-pip python-dev libgomp1 curl && \
-     rm -rf /var/lib/apt/lists/*
+# RUN apt-get update && apt-get install -y --no-install-recommends \
+# 	 python-pip python-dev libgomp1 curl && \
+#      rm -rf /var/lib/apt/lists/*
 
 WORKDIR /root
 
@@ -26,15 +29,25 @@ WORKDIR /root
 RUN pip install --upgrade pip
 
 RUN pip install setuptools requests wheel
-RUN pip install pandas
+RUN pip install pandas numpy
+
+RUN pip list
+
+# Tensorflow
 #RUN pip install tensorflow==2.0.0
 #RUN pip install tensorflow-gpu==2.0.0
-#COPY dependencies/tensorflow_gpu-2.1.0rc0-cp27-cp27mu-linux_x86_64.whl /root/
-#RUN pip install /root/tensorflow_gpu-2.1.0rc0-cp27-cp27mu-linux_x86_64.whl
 #RUN pip install tf-nightly-gpu
-RUN pip install tensorflow-gpu==2.1.0
+#RUN pip install tensorflow-gpu==2.1.0
+#RUN pip install tf-nightly-gpu==2.2.0.dev20200205
+RUN pip install tf-nightly-gpu==2.2.0.dev20200118
+#RUN pip install tf-nightly-gpu
 #RUN pip install tensorflow==2.1.0
-RUN pip install --no-deps tensorflow-io==0.11.0
+
+# TF.IO
+#RUN pip install --no-deps tensorflow-io==0.11.0
+COPY dependencies/tensorflow_io-0.15.0-cp36-cp36m-manylinux2010_x86_64.whl /root/
+RUN pip install --no-deps /root/tensorflow_io-0.15.0-cp36-cp36m-manylinux2010_x86_64.whl
+
 RUN pip install google-cloud-bigquery
 RUN pip install google-cloud-bigquery-storage
 RUN pip install google-cloud-logging
@@ -65,6 +78,8 @@ RUN echo '[GoogleCompute]\nservice_account = default' > /etc/boto.cfg
 ENV PROJECT_ID=alekseyv-scalableai-dev
 ENV GOOGLE_APPLICATION_CREDENTIALS=/root/alekseyv-scalableai-dev-077efe757ef6.json
 #ENV TF_FORCE_GPU_ALLOW_GROWTH=true
+
+RUN pip list
 
 # Copies the trainer code
 RUN mkdir /root/trainer

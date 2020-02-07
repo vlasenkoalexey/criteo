@@ -17,7 +17,8 @@
 
 #set -v
 
-python scripts/render_template.py $@ | kubectl delete -f -
+echo "Deleting existing resources..."
+kubectl delete pod,service criteo-sample-kubernetes-chief-0 criteo-sample-kubernetes-ps-0 criteo-sample-kubernetes-worker-0 criteo-sample-kubernetes-worker-1 --now
 
 echo "Rebuilding docker image..."
 export PROJECT_ID=alekseyv-scalableai-dev

@@ -7,12 +7,10 @@ import os.path
 import logging
 
 import os
-from six.moves import urllib
 import tempfile
 
 import time
 import math
-import numpy as np
 import pandas as pd
 import tensorflow as tf
 
@@ -827,6 +825,11 @@ def main():
     global DISTRIBUTION_STRATEGY_TYPE
     global EMBEDDINGS_MODE
     args = get_args()
+
+    logging.warning(os.system('python --version'))
+    logging.warning(os.system('pip --version'))
+    logging.warning(os.system('python3 --version'))
+    logging.warning(os.system('pip3 --version'))
 
     logging_client = google.cloud.logging.Client()
     logging_client.setup_logging()

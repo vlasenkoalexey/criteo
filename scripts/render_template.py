@@ -40,6 +40,7 @@ num_ps=0
 num_workers=0
 num_gpus_per_worker=0 if args.no_gpu else 1
 num_tpus=0
+num_chief=1
 
 if args.distribution_strategy == "tf.distribute.MirroredStrategy":
     num_gpus_per_worker=2
@@ -49,9 +50,10 @@ elif args.distribution_strategy == "tf.distribute.experimental.CentralStorageStr
     num_workers=0
     num_gpus_per_worker=2
 elif args.distribution_strategy == "tf.distribute.experimental.ParameterServerStrategy":
+    num_chief=1
     num_ps=1
-    num_workers=2
-    num_gpus_per_worker=2 # ???
+    num_workers=1
+    num_gpus_per_worker=0 if args.no_gpu else 1
 elif args.distribution_strategy == "tf.distribute.experimental.MultiWorkerMirroredStrategy":
     num_workers=2
     num_gpus_per_worker=2
@@ -64,6 +66,7 @@ trainer_cmd_args = ' '.join(["--train-location=cloud"] + sys.argv[1:])
 
 with open(os.path.dirname(os.path.realpath(__file__)) + "/template.yaml.jinja", "r") as f:
   print(jinja2.Template(f.read()).render(
+      num_chief=num_chief,
       num_ps=num_ps,
       num_workers=num_workers,
       num_gpus_per_worker=num_gpus_per_worker,

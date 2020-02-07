@@ -7,7 +7,7 @@
 {% set cmdline_arg_list = cmdline_args.split(" ") %}
 
 {%- set replicas = {"worker": num_workers,
-                    "chief":1,
+                    "chief": num_chief,
                     "ps": num_ps,
                     "evaluator": has_eval|int,
                     "tensorboard": has_tensorboard|int} -%}
@@ -112,7 +112,7 @@ spec:
     - "--port={{ port }}"
 {% else %}
     command:
-    - "/usr/bin/python"
+    - "python"
     - "{{ script }}"
     {%- for cmdline_arg in cmdline_arg_list %}
     - "{{ cmdline_arg }}"
