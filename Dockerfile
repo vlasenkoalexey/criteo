@@ -5,31 +5,13 @@
 #FROM tensorflow/tensorflow:2.0.0-gpu
 #FROM tensorflow/tensorflow:2.1.0
 #FROM nvidia/cuda:10.1-cudnn7-devel-ubuntu18.04
-FROM tensorflow/tensorflow:nightly-gpu-py3
+#FROM tensorflow/tensorflow:nightly-gpu-py3
+ARG BASE_IMAGE=''
+FROM ${BASE_IMAGE}
 
 # python is python3.7 and pip is pip3.7 in gcr.io/deeplearning-platform-release/tf2-gpu.2-1
 
-# Installs necessary dependencies.
-# RUN apt-get update && apt-get install -y --no-install-recommends \
-# 	 python-pip python-dev libgomp1 curl && \
-#      rm -rf /var/lib/apt/lists/*
-
 WORKDIR /root
-
-# RUN echo 'installing conda'
-# RUN curl -O https://repo.anaconda.com/archive/Anaconda2-2019.10-Linux-x86_64.sh
-# RUN bash ./Anaconda2-2019.10-Linux-x86_64.sh -b
-# RUN rm Anaconda2-2019.10-Linux-x86_64.sh
-# ENV PATH /root/anaconda2/bin:$PATH
-# RUN conda update conda
-# RUN conda create -n tf2.0 python=2.7 tensorflow=2.0 -y
-# RUN conda init bash
-# RUN conda activate tf2.0
-
-RUN pip install --upgrade pip
-
-RUN pip install setuptools requests wheel
-RUN pip install pandas numpy
 
 RUN pip list
 
@@ -39,14 +21,14 @@ RUN pip list
 #RUN pip install tf-nightly-gpu
 #RUN pip install tensorflow-gpu==2.1.0
 #RUN pip install tf-nightly-gpu==2.2.0.dev20200205
-RUN pip install tf-nightly-gpu==2.2.0.dev20200118
+#RUN pip install tf-nightly-gpu==2.2.0.dev20200118
 #RUN pip install tf-nightly-gpu
 #RUN pip install tensorflow==2.1.0
 
 # TF.IO
 #RUN pip install --no-deps tensorflow-io==0.11.0
-COPY dependencies/tensorflow_io-0.15.0-cp36-cp36m-manylinux2010_x86_64.whl /root/
-RUN pip install --no-deps /root/tensorflow_io-0.15.0-cp36-cp36m-manylinux2010_x86_64.whl
+#COPY dependencies/tensorflow_io-0.15.0-cp36-cp36m-manylinux2010_x86_64.whl /root/
+#RUN pip install --no-deps /root/tensorflow_io-0.15.0-cp36-cp36m-manylinux2010_x86_64.whl
 
 RUN pip install google-cloud-bigquery
 RUN pip install google-cloud-bigquery-storage

@@ -587,7 +587,7 @@ def train_and_evaluate_keras_model(model, model_dir):
 
   #log_dir= os.path.join(model_dir, "logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
   log_dir= os.path.join(model_dir, "logs")
-  tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, embeddings_freq=1, profile_batch=0)
+  tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, embeddings_freq=1, profile_batch=1)
 
   checkpoints_dir= os.path.join(model_dir, "checkpoints")
   # crashing https://github.com/tensorflow/tensorflow/issues/27688
@@ -598,14 +598,15 @@ def train_and_evaluate_keras_model(model, model_dir):
   train_time_callback = TrainTimeCallback()
 
   if DISTRIBUTION_STRATEGY_TYPE == 'tf.distribute.experimental.TPUStrategy':
-    # epoch and accuracy constants are not supported when training on TPU
+    # epoch and accuracy constants are not supported when training on TPU.
     checkpoints_file_path = checkpoints_dir + "/epochs_tpu.hdf5"
     checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoints_file_path, verbose=1, mode='max')
     callbacks=[tensorboard_callback, checkpoint_callback, train_time_callback]
   else:
-    if EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.manual:
+    if EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.manual or DISTRIBUTION_STRATEGY_TYPE == 'tf.distribute.experimental.MultiWorkerMirroredStrategy':
       # accuracy fails for adagrad
       # for some reason accuracy is not available for EMBEDDINGS_MODE_TYPE.manual
+      # for some reason accuracy is not available for MultiWorkerMirroredStrategy
       checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}.hdf5"
     else:
       checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
@@ -664,8 +665,7 @@ def train_estimator(strategy, model_dir):
           eval_distribute=strategy)
   feature_columns = create_feature_columns()
   estimator = tf.estimator.DNNClassifier(
-      #optimizer=tf.optimizers.SGD(learning_rate=0.05),
-      optimizer='SGD',
+      optimizer=tf.optimizers.SGD(learning_rate=0.05),
       feature_columns=feature_columns,
       hidden_units=[2560, 1024, 256],
       model_dir=model_dir,
@@ -703,7 +703,7 @@ def train_estimator_wide_and_deep(strategy, model_dir):
       estimator,
       train_spec=tf.estimator.TrainSpec(input_fn=lambda: get_dataset('train').repeat(EPOCHS), max_steps=get_max_steps()),
       eval_spec=tf.estimator.EvalSpec(input_fn=lambda: get_dataset('test')))
-  logging.info('done evaluating wine and deep estimator model')
+  logging.info('done evaluating wide and deep estimator model')
 
 def get_args():
     """Define the task arguments with the default values.
@@ -832,13 +832,13 @@ def main():
     global EMBEDDINGS_MODE
     args = get_args()
 
-    logging.warning(os.system('python --version'))
-    logging.warning(os.system('pip --version'))
-    logging.warning(os.system('python3 --version'))
-    logging.warning(os.system('pip3 --version'))
+    TRAIN_LOCATION = TRAIN_LOCATION_TYPE[args.train_location]
+    logging.info('train_location: ' + str(TRAIN_LOCATION))
 
-    logging_client = google.cloud.logging.Client()
-    logging_client.setup_logging()
+    if TRAIN_LOCATION != TRAIN_LOCATION_TYPE.local:
+      logging_client = google.cloud.logging.Client()
+      logging_client.setup_logging()
+
     logging.getLogger().setLevel(logging.INFO)
     logging.info('>>>>>>>>>>>>>>>>>>> trainer started <<<<<<<<<<<<<<<<<<<<<<<')
     logging.info('trainer called with following arguments:')
@@ -848,6 +848,8 @@ def main():
       os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
       logging.info('forcing no GPU')
 
+    logging.warning('tf version: ' + tf.version.VERSION)
+    logging.warning(os.system('pip list'))
     # Uncomment to see environment variables
     # logging.warning(os.system('env'))
 
@@ -881,8 +883,6 @@ def main():
     logging.info('tensorflow_io version: ' + tf_io.version.VERSION)
     logging.info('device_lib.list_local_devices(): ' + str(device_lib.list_local_devices()))
 
-    TRAIN_LOCATION = TRAIN_LOCATION_TYPE[args.train_location]
-    logging.info('train_location: ' + str(TRAIN_LOCATION))
     DATASET_SOURCE = DATASET_SOURCE_TYPE[args.dataset_source]
     logging.info('dataset_source: ' + str(DATASET_SOURCE))
     DATASET_SIZE = DATASET_SIZE_TYPE[args.dataset_size]

@@ -1,54 +1,11 @@
 #!/bin/bash
-
-# Copyright 2019 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-
 #set -v
 
-export PROJECT_ID=alekseyv-scalableai-dev
-export BUCKET_NAME="alekseyv-scalableai-dev-criteo-model-bucket"
 export REGION="us-central1"
-export IMAGE_TAG=tf-nightly-dev20200118
-export IMAGE_REPO_NAME=alekseyv_criteo_custom_container
-export IMAGE_URI=gcr.io/$PROJECT_ID/$IMAGE_REPO_NAME:$IMAGE_TAG
-
-gsutil mb gs://${BUCKET_NAME}
-
-#gsutil cp alekseyv-scalableai-dev-077efe757ef6.json gs://alekseyv-scalableai-dev-private-bucket/criteo
-
-CURRENT_DATE=`date +%Y%m%d_%H%M%S`
-MODEL_NAME=${CURRENT_DATE}
 AI_PLATFROM_MODE='docker'
 
-for i in "$@"
-do
-case $i in
-    --distribution-strategy=*)
-    DISTRIBUTION_STRATEGY="${i#*=}"
-    ;;
-    --tensorboard)
-    TENSORBOARD=true
-    ;;
-    --model-name=*)
-    MODEL_NAME="${i#*=}"
-    ;;
-    --ai-platform-mode=*)
-    AI_PLATFROM_MODE="${i#*=}"
-    ;;
-esac
-done
+DIR="$(cd "$(dirname "$0")" && pwd)"
+source $DIR/train-common.sh
 
 echo DISTRIBUTION_STRATEGY = ${DISTRIBUTION_STRATEGY}
 echo 'DISTRIBUTION_STRATEGY:'
@@ -95,18 +52,9 @@ echo CONFIG = ${CONFIG}
 echo 'CONFIG:'
 echo ${CONFIG}
 
-JOB_NAME=train_${MODEL_NAME}
-export MODEL_DIR=gs://${BUCKET_NAME}/${MODEL_NAME}/model
-
-if [ "$TENSORBOARD" = true ] ; then
-    trap "kill 0" SIGINT
-    echo "running tensorboard: tensorboard --logdir=${MODEL_DIR}/logs --port=0"
-    tensorboard --logdir=${MODEL_DIR}/logs --port=0 &
-fi
-
 if [ "$AI_PLATFROM_MODE" = "docker" ] ; then
     echo "Rebuilding docker image..."
-    docker build -f Dockerfile -t $IMAGE_URI ./
+    docker build -f Dockerfile -t $IMAGE_URI --build-arg BASE_IMAGE=${DOCKER_BASE_IMAGE} ./
     docker push $IMAGE_URI
 
     echo "Submitting an AI Platform job..."
