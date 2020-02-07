@@ -664,7 +664,8 @@ def train_estimator(strategy, model_dir):
           eval_distribute=strategy)
   feature_columns = create_feature_columns()
   estimator = tf.estimator.DNNClassifier(
-      optimizer=tf.optimizers.SGD(learning_rate=0.05),
+      #optimizer=tf.optimizers.SGD(learning_rate=0.05),
+      optimizer='SGD',
       feature_columns=feature_columns,
       hidden_units=[2560, 1024, 256],
       model_dir=model_dir,
@@ -774,6 +775,11 @@ def get_args():
 
     args_parser.add_argument(
         '--ai-platform-mode',
+        help='Ignored by this script.',
+        default=None)
+
+    args_parser.add_argument(
+        '--image-name',
         help='Ignored by this script.',
         default=None)
 

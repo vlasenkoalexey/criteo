@@ -1,5 +1,4 @@
 {%- set name = "criteo-sample-kubernetes" -%}
-{%- set image = "gcr.io/alekseyv-scalableai-dev/alekseyv_criteo_custom_container:v1" -%}
 {%- set has_eval = False -%}
 {%- set has_tensorboard = False -%}
 {%- set script = "trainer/trainer.py" -%}
@@ -33,7 +32,9 @@
 {%- macro tf_config(task_type, task_id) -%}
 {
   \"cluster\": {
+    {%- if num_chief > 0 -%}
     \"chief\": [{{ chief_host() }}]
+    {%- endif -%}
     {%- if num_workers > 0 -%},
     \"worker\": [{{ worker_hosts() }}]
     {%- endif -%}

@@ -20,6 +20,9 @@
 export PROJECT_ID=alekseyv-scalableai-dev
 export BUCKET_NAME="alekseyv-scalableai-dev-criteo-model-bucket"
 export REGION="us-central1"
+export IMAGE_TAG=tf-nightly-dev20200118
+export IMAGE_REPO_NAME=alekseyv_criteo_custom_container
+export IMAGE_URI=gcr.io/$PROJECT_ID/$IMAGE_REPO_NAME:$IMAGE_TAG
 
 gsutil mb gs://${BUCKET_NAME}
 
@@ -103,9 +106,6 @@ fi
 
 if [ "$AI_PLATFROM_MODE" = "docker" ] ; then
     echo "Rebuilding docker image..."
-    export IMAGE_REPO_NAME=alekseyv_criteo_custom_container
-    export IMAGE_TAG=v1
-    export IMAGE_URI=gcr.io/$PROJECT_ID/$IMAGE_REPO_NAME:$IMAGE_TAG
     docker build -f Dockerfile -t $IMAGE_URI ./
     docker push $IMAGE_URI
 

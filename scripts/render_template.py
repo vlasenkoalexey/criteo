@@ -34,6 +34,11 @@ args_parser.add_argument(
     help='Disabling GPUs - forces training to happen on CPU.',
     default=False)
 
+args_parser.add_argument(
+    '--image-name',
+    help='Docker image name.',
+    default=None)
+
 args, unknown = args_parser.parse_known_args()
 
 num_ps=0
@@ -66,6 +71,7 @@ trainer_cmd_args = ' '.join(["--train-location=cloud"] + sys.argv[1:])
 
 with open(os.path.dirname(os.path.realpath(__file__)) + "/template.yaml.jinja", "r") as f:
   print(jinja2.Template(f.read()).render(
+      image=args.image_name,
       num_chief=num_chief,
       num_ps=num_ps,
       num_workers=num_workers,

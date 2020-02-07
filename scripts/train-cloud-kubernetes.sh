@@ -16,14 +16,14 @@
 # ==============================================================================
 
 #set -v
+export PROJECT_ID=alekseyv-scalableai-dev
+export IMAGE_REPO_NAME=alekseyv_criteo_custom_container
+export IMAGE_TAG=tf-nightly-dev20200118
 
 echo "Deleting existing resources..."
 kubectl delete pod,service criteo-sample-kubernetes-chief-0 criteo-sample-kubernetes-ps-0 criteo-sample-kubernetes-worker-0 criteo-sample-kubernetes-worker-1 --now
 
 echo "Rebuilding docker image..."
-export PROJECT_ID=alekseyv-scalableai-dev
-export IMAGE_REPO_NAME=alekseyv_criteo_custom_container
-export IMAGE_TAG=v1
 export IMAGE_URI=gcr.io/$PROJECT_ID/$IMAGE_REPO_NAME:$IMAGE_TAG
 docker build -f Dockerfile -t $IMAGE_URI ./
 docker push $IMAGE_URI
@@ -60,7 +60,7 @@ if [ "$TENSORBOARD" = true ] ; then
 fi
 
 CURRENT_DATE_UTC=`date --utc -Iseconds`
-python scripts/render_template.py $@ --job-dir=${MODEL_DIR} | kubectl create -f -
+python scripts/render_template.py $@ --job-dir=${MODEL_DIR} --image-name=${IMAGE_URI} | kubectl create -f -
 
 echo "submitted job to kubernetes cluster"
 echo ""

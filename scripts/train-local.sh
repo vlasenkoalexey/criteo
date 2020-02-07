@@ -1,6 +1,9 @@
 #!/bin/bash
 export PROJECT_ID=alekseyv-scalableai-dev
 export GOOGLE_APPLICATION_CREDENTIALS="${PWD}/alekseyv-scalableai-dev-077efe757ef6.json"
+export IMAGE_TAG=tf-nightly-dev20200118
+export IMAGE_REPO_NAME=alekseyv_criteo_custom_container
+export IMAGE_URI=gcr.io/$PROJECT_ID/$IMAGE_REPO_NAME:$IMAGE_TAG
 
 AI_PLATFROM_MODE=docker
 CURRENT_DATE=`date +%Y%m%d_%H%M%S`
@@ -33,9 +36,6 @@ fi
 
 if [ "$AI_PLATFROM_MODE" = "docker" ] ; then
     echo "Rebuilding docker image..."
-    export IMAGE_REPO_NAME=alekseyv_criteo_custom_container
-    export IMAGE_TAG=v1
-    export IMAGE_URI=gcr.io/$PROJECT_ID/$IMAGE_REPO_NAME:$IMAGE_TAG
     docker build -f Dockerfile -t $IMAGE_URI ./
     docker push $IMAGE_URI
 
