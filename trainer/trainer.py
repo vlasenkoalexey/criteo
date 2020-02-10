@@ -849,7 +849,7 @@ def main():
       logging.info('forcing no GPU')
 
     logging.warning('tf version: ' + tf.version.VERSION)
-    logging.warning(os.system('pip list'))
+
     # Uncomment to see environment variables
     # logging.warning(os.system('env'))
 
