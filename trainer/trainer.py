@@ -98,10 +98,10 @@ TRAIN_LOCATION = TRAIN_LOCATION_TYPE.local
 DISTRIBUTION_STRATEGY_TYPE = None
 DISTRIBUTION_STRATEGY_TYPE_VALUES = 'tf.distribute.MirroredStrategy tf.distribute.experimental.ParameterServerStrategy ' \
   'tf.distribute.experimental.MultiWorkerMirroredStrategy tf.distribute.experimental.CentralStorageStrategy ' \
-  'tf.distribute.experimental.TPUStrategy'
+  'tf.distribute.experimental.TPUStrategy tf.distribute.OneDeviceStrategy'
 TRAINING_FUNCTION_VALUES = 'train_keras_sequential train_keras_functional train_keras_functional_wide_and_deep ' \
   'train_keras_to_estimator_functional train_keras_to_estimator_sequential train_estimator train_estimator_wide_and_deep ' \
-  'train_keras_functional_no_feature_layer'
+  'train_keras_functional_no_feature_layer train_custom_loop_keras_sequential'
 
 DATASET_SIZE_TYPE = Enum('DATASET_SIZE_TYPE', 'full small')
 DATASET_SIZE = DATASET_SIZE_TYPE.small
@@ -705,6 +705,106 @@ def train_estimator_wide_and_deep(strategy, model_dir):
       eval_spec=tf.estimator.EvalSpec(input_fn=lambda: get_dataset('test')))
   logging.info('done evaluating wide and deep estimator model')
 
+def train_custom_loop_keras_sequential(strategy, model_dir):
+  train_custom_loop(strategy, create_keras_model_sequential(), model_dir)
+
+def train_custom_loop(strategy, model, model_dir):
+  print('train custom loop')
+  # Set reduction to `none` so we can do the reduction afterwards and divide by
+  # global batch size.
+  loss_fn = lambda labels, probabilities: tf.reduce_mean(tf.keras.losses.binary_crossentropy(labels, probabilities))
+
+  loss_object = tf.keras.losses.BinaryCrossentropy(reduction=tf.keras.losses.Reduction.NONE)
+  def compute_loss(labels, predictions):
+    per_example_loss = loss_object(labels, predictions)
+    return tf.nn.compute_average_loss(per_example_loss, global_batch_size=BATCH_SIZE)
+    #return tf.reduce_mean(per_example_loss, predictions)
+
+  def train_step(inputs):
+    images, labels = inputs
+
+    labels_reshaped = tf.reshape(labels, [labels.get_shape().as_list()[0], 1])
+
+    #tf.print(images)
+    with tf.GradientTape() as tape:
+      predictions = model(images, training=True)
+      #tf.print(predictions)
+      loss = loss_fn(labels_reshaped, predictions)
+
+    gradients = tape.gradient(loss, model.trainable_variables)
+    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+
+    train_accuracy.update_state(labels, predictions)
+    return loss
+
+  def test_step(inputs):
+    images, labels = inputs
+
+    predictions = model(images, training=False)
+    t_loss = loss_object(labels, predictions)
+
+    test_loss.update_state(t_loss)
+    test_accuracy.update_state(labels, predictions)
+
+  @tf.function
+  def distributed_train_step(dataset_inputs):
+    per_replica_losses = strategy.experimental_run_v2(train_step,
+                                                      args=(dataset_inputs,))
+    return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
+                          axis=None)
+
+  @tf.function
+  def distributed_test_step(dataset_inputs):
+    return strategy.experimental_run_v2(test_step, args=(dataset_inputs,))
+
+  test_loss = tf.keras.metrics.Mean(name='test_loss')
+  train_accuracy = tf.keras.metrics.BinaryAccuracy(
+      name='train_accuracy')
+  test_accuracy = tf.keras.metrics.BinaryAccuracy(
+      name='test_accuracy')
+  optimizer = tf.optimizers.SGD(learning_rate=0.05)
+  checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=model)
+
+  checkpoints_dir= os.path.join(model_dir, "checkpoints")
+  train_dist_dataset = get_dataset('train')   #.take(100)
+  for epoch in range(EPOCHS):
+    print('epoch ' + str(epoch))
+
+    # TRAIN LOOP
+    total_loss = 0.0
+    num_batches = 0
+    for x in train_dist_dataset:
+      # (example, label) = x
+      # logging.info('label %s', label.get_shape())
+      # logging.info('ex %s', example['cat1'].get_shape())
+      total_loss += distributed_train_step(x)
+      if num_batches % 10 == 0:
+        print('batch ' + str(num_batches))
+      num_batches += 1
+    train_loss = total_loss / num_batches
+    checkpoint.save(checkpoints_dir)
+
+  test_dist_dataset = get_dataset('test')   #.take(100)
+
+  logging.info("done training keras model, evaluating model")
+  verbosity = 1 if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.local else 2
+  loss, accuracy = model.evaluate(test_dist_dataset, verbose=verbosity)
+  logging.info("Eval - Loss: {}, Accuracy: {}".format(loss, accuracy))
+
+  # TEST LOOP
+  for x in test_dist_dataset:
+    distributed_test_step(x)
+
+  template = ("Epoch {}, Loss: {}, Accuracy: {}, Test Loss: {}, "
+              "Test Accuracy: {}")
+  print (template.format(epoch+1, train_loss,
+                        train_accuracy.result(), test_loss.result(),
+                        test_accuracy.result()))
+
+  test_loss.reset_states()
+  train_accuracy.reset_states()
+  test_accuracy.reset_states()
+
 def get_args():
     """Define the task arguments with the default values.
     Returns:
@@ -876,8 +976,11 @@ def main():
       tf.tpu.experimental.initialize_tpu_system(tpu)
       distribution_strategy = tf.distribute.experimental.TPUStrategy(tpu)
       logging.info('training using TPUStrategy, tpu.cluster_spec: %s', tpu.cluster_spec())
-    elif args.distribution_strategy:
-      distribution_strategy = eval(args.distribution_strategy)()
+    elif args.distribution_strategy == 'tf.distribute.OneDeviceStrategy':
+      if args.no_gpu:
+        distribution_strategy = tf.distribute.OneDeviceStrategy(device="/cpu:0")
+      else:
+        distribution_strategy = tf.distribute.OneDeviceStrategy(device="/gpu:0")
 
     logging.info('tensorflow version: ' + tf.version.VERSION)
     logging.info('tensorflow_io version: ' + tf_io.version.VERSION)
@@ -896,6 +999,7 @@ def main():
     # model_dir = os.path.join(model_dir, args.training_function, 'model.joblib')
     logging.info('Model will be saved to "%s..."', model_dir)
 
+    logging.info('training_function arg: ' + str(args.training_function))
     training_function = getattr(sys.modules[__name__], args.training_function)
     logging.info('training_function: ' + str(training_function))
 
