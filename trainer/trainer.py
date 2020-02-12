@@ -101,7 +101,7 @@ DISTRIBUTION_STRATEGY_TYPE_VALUES = 'tf.distribute.MirroredStrategy tf.distribut
   'tf.distribute.experimental.TPUStrategy tf.distribute.OneDeviceStrategy'
 TRAINING_FUNCTION_VALUES = 'train_keras_sequential train_keras_functional train_keras_functional_wide_and_deep ' \
   'train_keras_to_estimator_functional train_keras_to_estimator_sequential train_estimator train_estimator_wide_and_deep ' \
-  'train_keras_functional_no_feature_layer train_custom_loop_keras_sequential'
+  'train_keras_functional_no_feature_layer train_custom_loop_keras_sequential train_custom_loop_keras_model_functional_no_feature_layer'
 
 DATASET_SIZE_TYPE = Enum('DATASET_SIZE_TYPE', 'full small')
 DATASET_SIZE = DATASET_SIZE_TYPE.small
@@ -708,54 +708,29 @@ def train_estimator_wide_and_deep(strategy, model_dir):
 def train_custom_loop_keras_sequential(strategy, model_dir):
   train_custom_loop(strategy, create_keras_model_sequential(), model_dir)
 
+def train_custom_loop_keras_model_functional_no_feature_layer(strategy, model_dir):
+  train_custom_loop(strategy, create_keras_model_functional_no_feature_layer(), model_dir)
+
 def train_custom_loop(strategy, model, model_dir):
-  print('train custom loop')
-  # Set reduction to `none` so we can do the reduction afterwards and divide by
-  # global batch size.
-  loss_fn = lambda labels, probabilities: tf.reduce_mean(tf.keras.losses.binary_crossentropy(labels, probabilities))
+  logging.info('training using custom loop')
+
+  log_dir= os.path.join(model_dir, "logs")
+  if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+  file_writer = tf.summary.create_file_writer(log_dir + "/metrics")
+  file_writer.set_as_default()
+  # This is fine for MirroredStrategy and TPUStrategy, but has to be changed to run on chief only
+  # once multi-node training is supported (ParameterServer, MultiWorkerMirroredStrategy).
+  batch_summary_callback = BatchAccuracyAndLossSummaryCallback(DATASET_SIZE)
+  train_time_callback = TrainTimeCallback()
+  checkpoints_dir= os.path.join(model_dir, "checkpoints")
+  if not os.path.exists(checkpoints_dir):
+      os.makedirs(checkpoints_dir)
+
+  checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}.hdf5"
 
   loss_object = tf.keras.losses.BinaryCrossentropy(reduction=tf.keras.losses.Reduction.NONE)
-  def compute_loss(labels, predictions):
-    per_example_loss = loss_object(labels, predictions)
-    return tf.nn.compute_average_loss(per_example_loss, global_batch_size=BATCH_SIZE)
-    #return tf.reduce_mean(per_example_loss, predictions)
-
-  def train_step(inputs):
-    images, labels = inputs
-
-    labels_reshaped = tf.reshape(labels, [labels.get_shape().as_list()[0], 1])
-
-    #tf.print(images)
-    with tf.GradientTape() as tape:
-      predictions = model(images, training=True)
-      #tf.print(predictions)
-      loss = loss_fn(labels_reshaped, predictions)
-
-    gradients = tape.gradient(loss, model.trainable_variables)
-    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-
-    train_accuracy.update_state(labels, predictions)
-    return loss
-
-  def test_step(inputs):
-    images, labels = inputs
-
-    predictions = model(images, training=False)
-    t_loss = loss_object(labels, predictions)
-
-    test_loss.update_state(t_loss)
-    test_accuracy.update_state(labels, predictions)
-
-  @tf.function
-  def distributed_train_step(dataset_inputs):
-    per_replica_losses = strategy.experimental_run_v2(train_step,
-                                                      args=(dataset_inputs,))
-    return strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
-                          axis=None)
-
-  @tf.function
-  def distributed_test_step(dataset_inputs):
-    return strategy.experimental_run_v2(test_step, args=(dataset_inputs,))
+  loss_fn = lambda labels, predictions: tf.reduce_mean(loss_object(labels, predictions))
 
   test_loss = tf.keras.metrics.Mean(name='test_loss')
   train_accuracy = tf.keras.metrics.BinaryAccuracy(
@@ -765,41 +740,68 @@ def train_custom_loop(strategy, model, model_dir):
   optimizer = tf.optimizers.SGD(learning_rate=0.05)
   checkpoint = tf.train.Checkpoint(optimizer=optimizer, model=model)
 
-  checkpoints_dir= os.path.join(model_dir, "checkpoints")
-  train_dist_dataset = get_dataset('train')   #.take(100)
+  @tf.function
+  def train_step(examples, labels):
+    with tf.GradientTape() as tape:
+        predictions = model(examples, training=True)
+        loss = loss_fn(labels, predictions)
+    grads = tape.gradient(loss, model.trainable_variables)
+    optimizer.apply_gradients(zip(grads, model.trainable_variables))
+    train_accuracy.update_state(labels, predictions)
+    return loss
+
+  @tf.function
+  def test_step(images, labels):
+    predictions = model(images, training=False)
+    loss = loss_fn(labels, predictions)
+    test_accuracy.update_state(labels, predictions)
+    test_loss.update_state(loss)
+    return loss
+
+  train_dist_dataset = get_dataset('train')
+  train_time_callback.on_train_begin()
   for epoch in range(EPOCHS):
-    print('epoch ' + str(epoch))
+    batch_summary_callback.on_epoch_begin(epoch, {})
+    train_time_callback.on_epoch_begin(epoch, {})
 
     # TRAIN LOOP
     total_loss = 0.0
     num_batches = 0
-    for x in train_dist_dataset:
-      # (example, label) = x
-      # logging.info('label %s', label.get_shape())
-      # logging.info('ex %s', example['cat1'].get_shape())
-      total_loss += distributed_train_step(x)
-      if num_batches % 10 == 0:
-        print('batch ' + str(num_batches))
+    for (examples, labels) in train_dist_dataset:
+      # batch losses from all replicas
+      batch_loss_all_replicas = strategy.experimental_run_v2(train_step, args=(examples, labels))
+      # reduced to a single number both across replicas and across the bacth size
+      loss = strategy.reduce(tf.distribute.ReduceOp.MEAN, batch_loss_all_replicas, axis=None)
+      total_loss += loss
+      train_loss = total_loss / num_batches
+      batch_summary_callback.on_train_batch_end(
+        num_batches,
+        {'accuracy': train_accuracy.result(),
+        'loss': train_loss })
       num_batches += 1
-    train_loss = total_loss / num_batches
-    checkpoint.save(checkpoints_dir)
+    checkpoint.save(checkpoints_file_path.format(epoch=epoch))
+    train_time_callback.params = {'steps' : num_batches}
+    train_time_callback.on_epoch_end(epoch, {})
+    logging.info("Epoch: {} - Loss: {}, Accuracy: {}".format(epoch, loss, train_accuracy.result()))
+  train_time_callback.on_train_end()
 
-  test_dist_dataset = get_dataset('test')   #.take(100)
+  test_dist_dataset = get_dataset('test')
 
-  logging.info("done training keras model, evaluating model")
-  verbosity = 1 if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.local else 2
-  loss, accuracy = model.evaluate(test_dist_dataset, verbose=verbosity)
-  logging.info("Eval - Loss: {}, Accuracy: {}".format(loss, accuracy))
+  # Keras evaluation
+  # logging.info("done training keras model, evaluating model")
+  # verbosity = 1 if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.local else 2
+  # loss, accuracy = model.evaluate(test_dist_dataset, verbose=verbosity)
+  # logging.info("Eval - Loss: {}, Accuracy: {}".format(loss, accuracy))
 
   # TEST LOOP
-  for x in test_dist_dataset:
-    distributed_test_step(x)
+  for (examples, labels) in test_dist_dataset:
+    batch_loss_all_replicas = strategy.experimental_run_v2(test_step, args=(examples, labels))
 
-  template = ("Epoch {}, Loss: {}, Accuracy: {}, Test Loss: {}, "
-              "Test Accuracy: {}")
-  print (template.format(epoch+1, train_loss,
-                        train_accuracy.result(), test_loss.result(),
-                        test_accuracy.result()))
+  logging.info("Loss: {}, Accuracy: {}, Test Loss: {}, Test Accuracy: {}".format(
+    train_loss,
+    train_accuracy.result(),
+    test_loss.result(),
+    test_accuracy.result()))
 
   test_loss.reset_states()
   train_accuracy.reset_states()
@@ -981,6 +983,8 @@ def main():
         distribution_strategy = tf.distribute.OneDeviceStrategy(device="/cpu:0")
       else:
         distribution_strategy = tf.distribute.OneDeviceStrategy(device="/gpu:0")
+    elif args.distribution_strategy:
+      distribution_strategy = eval(args.distribution_strategy)()
 
     logging.info('tensorflow version: ' + tf.version.VERSION)
     logging.info('tensorflow_io version: ' + tf_io.version.VERSION)

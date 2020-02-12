@@ -12,7 +12,7 @@ from datetime import datetime
 BUCKET_NAME="alekseyv-scalableai-dev-criteo-model-bucket"
 DISTRIBUTION_STRATEGY_TYPE_VALUES = 'tf.distribute.MirroredStrategy tf.distribute.experimental.ParameterServerStrategy ' \
   'tf.distribute.experimental.MultiWorkerMirroredStrategy tf.distribute.experimental.CentralStorageStrategy ' \
-  'tf.distribute.experimental.TPUStrategy'
+  'tf.distribute.experimental.TPUStrategy tf.distribute.OneDeviceStrategy'
 
 args_parser = argparse.ArgumentParser()
 args_parser.add_argument(
@@ -66,6 +66,11 @@ elif args.distribution_strategy == "tf.distribute.experimental.TPUStrategy":
     num_workers=0
     num_gpus_per_worker=0
     num_tpus=8 # minimal available number for central1-c  # https://cloud.google.com/tpu/docs/types-zones
+elif args.distribution_strategy == "tf.distribute.OneDeviceStrategy":
+    num_chief=1
+    num_ps=0
+    num_workers=0
+    num_gpus_per_worker=0 if args.no_gpu else 1
 
 trainer_cmd_args = ' '.join(["--train-location=cloud"] + sys.argv[1:])
 
