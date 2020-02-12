@@ -10,6 +10,7 @@ export DOCKER_GPU_BASE_IMAGE=gcr.io/deeplearning-platform-release/tf2-gpu.2-1
 
 #export IMAGE_TAG=tf21_gpu_tfofficial
 #export IMAGE_TAG=tf21_gpu_cuda
+#export IMAGE_TAG=tf21_gpu
 export IMAGE_TAG=tf21_gpu
 export DOCKER_BASE_IMAGE=${DOCKER_GPU_BASE_IMAGE}
 export FLAVOR='GPU'
