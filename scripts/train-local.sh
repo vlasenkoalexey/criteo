@@ -20,7 +20,7 @@ if [ "$AI_PLATFROM_MODE" = "docker" ] ; then
     #docker run --gpus all -it -v ${PWD}:/host $IMAGE_URI python trainer/trainer.py --job-dir=/root/model $@
 elif [ "$AI_PLATFROM_MODE" = "python" ] ; then
     echo "Running training job as a python script"
-    sudo LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/google/home/alekseyv/cuda/extras/CUPTI/lib64/:/usr/local/google/home/alekseyv/cuda/targets/x86_64-linux/lib/; python3 trainer/trainer.py --job-dir=${MODEL_DIR} $@
+    LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/google/home/alekseyv/cuda/extras/CUPTI/lib64/:/usr/local/google/home/alekseyv/cuda/targets/x86_64-linux/lib/; python3 trainer/trainer.py --job-dir=${MODEL_DIR} $@
 else
     echo "Running training job using local Cloud AI command..."
     PACKAGE_PATH=./trainer

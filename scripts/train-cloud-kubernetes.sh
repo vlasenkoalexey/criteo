@@ -3,8 +3,9 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 source $DIR/train-common.sh
 
 echo "Deleting existing resources..."
-kubectl delete pod,service,PodSecurityPolicy --all
-#kubectl delete pod,service criteo-sample-kubernetes-chief-0 criteo-sample-kubernetes-ps-0 criteo-sample-kubernetes-worker-0 criteo-sample-kubernetes-worker-1 --now
+#kubectl delete pod,service,PodSecurityPolicy --all
+kubectl delete pod,service criteo-sample-kubernetes-chief-0 criteo-sample-kubernetes-ps-0 criteo-sample-kubernetes-worker-0 criteo-sample-kubernetes-worker-1 --now
+kubectl delete podsecuritypolicy.extensions "privileged" --now
 
 CLUSTER_NAME='criteo-cluster-tpu'
 export BUCKET_NAME="alekseyv-scalableai-dev-criteo-model-bucket"
