@@ -380,10 +380,13 @@ def read_gcs(table_name):
 
   corpus = get_corpus()
   (mean_dict, std_dict) = get_mean_and_std_dicts()
-  transformed_ds = dataset.map (lambda *row_tuple: transofrom_row_gcs(row_tuple, mean_dict, std_dict, corpus)) \
-    .shuffle(10000) \
+  transofrom_row_gcs_function = lambda *row_tuple: transofrom_row_gcs(row_tuple, mean_dict, std_dict, corpus)
+
+  transformed_ds = dataset\
     .batch(BATCH_SIZE) \
-    .prefetch(100)
+    .shuffle(50) \
+    .map (transofrom_row_gcs_function, num_parallel_calls=num_parallel_calls) \
+    .prefetch(50)
   return transformed_ds
 
 def get_dataset(table_name):
