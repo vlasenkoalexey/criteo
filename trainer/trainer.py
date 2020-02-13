@@ -593,7 +593,11 @@ def train_and_evaluate_keras_model(model, model_dir):
 
   #log_dir= os.path.join(model_dir, "logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
   log_dir= os.path.join(model_dir, "logs")
-  tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, embeddings_freq=1, profile_batch=1)
+  tensorboard_callback = tf.keras.callbacks.TensorBoard(
+    log_dir=log_dir,
+    histogram_freq=1,
+    embeddings_freq=1,
+    profile_batch=min(EPOCHS, 2))
 
   checkpoints_dir= os.path.join(model_dir, "checkpoints")
   # crashing https://github.com/tensorflow/tensorflow/issues/27688
