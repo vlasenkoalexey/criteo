@@ -152,6 +152,26 @@ CSV_SCHEMA = [
       bigquery.SchemaField("cat26", "STRING")
   ]
 
+# See https://docs.google.com/spreadsheets/d/1s_QCP4dyO9L9QXVQu0TKrIi767kMwlr8SsfAX5UCNrw/edit#gid=118220263
+KEY_CROSSES = [
+  ['cat13','cat18'],
+  ['cat11', 'cat18'],
+  ['cat11', 'cat15'],
+  ['cat2', 'cat8'],
+  ['cat7', 'cat15'],
+  ['cat13', 'cat15'],
+  ['cat1', 'cat2'],
+  ['cat13', 'cat19'],
+  ['cat2', 'cat13'],
+  ['cat7', 'cat18'],
+  ['cat1', 'cat13'],
+  ['cat2', 'cat5'],
+  ['cat2', 'cat11'],
+  ['cat11', 'cat19'],
+  ['cat1', 'cat11'],
+  ['cat8', 'cat13']
+]
+
 def get_mean_and_std_dicts():
   table_name = 'days' if DATASET_SIZE == DATASET_SIZE_TYPE.full else 'small'
   client = bigquery.Client(project=PROJECT_ID)
@@ -405,16 +425,8 @@ def create_categorical_feature_column_with_hash_bucket(corpus_dict, key):
     hash_bucket_size,
     dtype=tf.dtypes.string
   )
-  if hash_bucket_size < 10:
-    logging.info('categorical column %s hash_bucket_size %d - creating indicator column', key, hash_bucket_size)
-    return tf.feature_column.indicator_column(categorical_feature_column)
-
-  embedding_dimension = int(min(50, math.floor(6 * hash_bucket_size**0.25)))
-  embedding_feature_column = tf.feature_column.embedding_column(
-      categorical_feature_column,
-      embedding_dimension)
-  logging.info('categorical column %s hash_bucket_size %d dimension %d', key, hash_bucket_size, embedding_dimension)
-  return embedding_feature_column
+  logging.info('categorical column %s hash_bucket_size %d', key, hash_bucket_size)
+  return categorical_feature_column
 
 def create_categorical_feature_column_with_vocabulary_list(corpus_dict, key):
   corpus_size = len(corpus_dict[key])
@@ -424,35 +436,48 @@ def create_categorical_feature_column_with_vocabulary_list(corpus_dict, key):
     dtype=tf.dtypes.string,
     num_oov_buckets=corpus_size
   )
+  logging.info('categorical column with vocabular %s corpus_size %d', key, corpus_size)
+
+  return categorical_feature_column
+
+def create_embedding(corpus_dict, key, categorical_feature_column):
+  corpus_size = len(corpus_dict[key])
+  if corpus_size < 10:
+    logging.info('categorical column %s corpus_size %d - creating indicator column', key, corpus_size)
+    return tf.feature_column.indicator_column(categorical_feature_column)
 
   embedding_dimension = int(min(50, math.floor(6 * corpus_size**0.25)))
   embedding_feature_column = tf.feature_column.embedding_column(
       categorical_feature_column,
       embedding_dimension)
-  logging.info('categorical column %s corpus_size %d dimension %d', key, corpus_size, embedding_dimension)
   return embedding_feature_column
 
 def create_linear_feature_columns():
   return list(tf.feature_column.numeric_column(field.name, dtype=tf.dtypes.float32)  for field in CSV_SCHEMA if field.field_type == 'INTEGER' and field.name != 'label')
 
-def create_categorical_feature_columns():
+def create_categorical_embeddings_feature_columns(corpus_dict):
   if EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.none:
     return []
   elif EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.hashbucket:
-    corpus_dict = get_corpus_dict()
-    return list(create_categorical_feature_column_with_hash_bucket(corpus_dict, key)
-      for key, _ in corpus_dict.items())
+    return list(create_embedding(
+      corpus_dict,
+      key,
+      create_categorical_feature_column_with_hash_bucket(corpus_dict, key))
+        for key, _ in corpus_dict.items())
   elif EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.vocabular:
-    corpus_dict = get_corpus_dict()
-    return list(create_categorical_feature_column_with_vocabulary_list(corpus_dict, key)
-      for key, _ in corpus_dict.items())
+    return list(create_embedding(
+      corpus_dict,
+      key,
+      create_categorical_feature_column_with_vocabulary_list(corpus_dict, key))
+        for key, _ in corpus_dict.items())
   else:
     raise ValueError('invalid EMBEDDINGS_MODE: {}'.format(EMBEDDINGS_MODE))
 
 def create_feature_columns():
+  corpus_dict = get_corpus_dict()
   feature_columns = []
   feature_columns.extend(create_linear_feature_columns())
-  feature_columns.extend(create_categorical_feature_columns())
+  feature_columns.extend(create_categorical_embeddings_feature_columns(corpus_dict))
   return feature_columns
 
 def create_input_layer():
@@ -461,7 +486,7 @@ def create_input_layer():
        feature_column.name: tf.keras.layers.Input(name=feature_column.name, shape=(1,), dtype=tf.float32)
        for feature_column in numeric_feature_columns
     }
-    categorical_feature_columns = create_categorical_feature_columns()
+    categorical_feature_columns = create_categorical_embeddings_feature_columns()
     categorical_input_layers = {
        feature_column.categorical_column.name: tf.keras.layers.Input(name=feature_column.categorical_column.name, shape=(), dtype=tf.string)
        for feature_column in categorical_feature_columns
@@ -534,9 +559,9 @@ def create_keras_model_functional_no_feature_layer():
 
   return model
 
-def create_keras_model_functional_wide_and_deep():
+def create_keras_model_functional_wide_and_deep_dontuse():
     (feature_layer_inputs, feature_columns) = create_input_layer()
-    categorical_feature_columns=create_categorical_feature_columns()
+    categorical_feature_columns=create_categorical_embeddings_feature_columns()
 
     wide = tf.keras.layers.DenseFeatures(categorical_feature_columns)(feature_layer_inputs)
 
@@ -561,6 +586,55 @@ def create_keras_model_functional_wide_and_deep():
       metrics=['accuracy'])
     logging.info("model: " + str(model.summary()))
     return model
+
+def create_keras_model_functional_wide_and_deep():
+    if EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.none:
+      raise ValueError('embeddings are required for wide and deep model')
+
+    linear_feature_columns = create_linear_feature_columns()
+    corpus_dict = get_corpus_dict()
+    categorical_feature_columns_and_embeddings = create_categorical_embeddings_feature_columns(corpus_dict)
+    categorical_feature_columns = list(tf.feature_column.indicator_column(embedding.categorical_column) for embedding in categorical_feature_columns_and_embeddings)
+    embeddings = list(embedding for embedding in categorical_feature_columns_and_embeddings)
+
+    crossed_columns = list(tf.feature_column.indicator_column(tf.feature_column.crossed_column(
+      keys,
+      min(max(len(corpus_dict[keys[0]]), len(corpus_dict[keys[1]])), 100000))) for keys in KEY_CROSSES)
+
+    deep_model_feature_columns = embeddings + linear_feature_columns
+    dense_feature_layer = tf.keras.layers.DenseFeatures(deep_model_feature_columns)
+    Dense = tf.keras.layers.Dense
+    dense_model = tf.keras.Sequential(
+    [
+        dense_feature_layer,
+        Dense(2560, activation=tf.nn.relu),
+        Dense(1024, activation=tf.nn.relu),
+        Dense(256, activation=tf.nn.relu),
+        Dense(1, activation=tf.nn.sigmoid)
+    ])
+
+    wide_model_feature_columns = categorical_feature_columns + crossed_columns
+    # no sparse alternative, see https://github.com/tensorflow/community/pull/188/
+    # https://cs/piper///depot/google3/learning/tfx/users/tfx/examples/tfx_keras_widedeep/models/premade_widedeep/model.py;rcl=291050847;l=100
+    sparse_feature_layer = tf.keras.layers.DenseFeatures(wide_model_feature_columns)
+
+    linear_model = tf.keras.Sequential(
+    [
+      sparse_feature_layer,
+      Dense(1, activation=tf.nn.sigmoid)
+    ])
+
+    wide_deep_model = tf.keras.experimental.WideDeepModel(linear_model, dense_model)
+    #wide_deep_model(deep_model_feature_columns) # todo change
+    linear_opt = tf.keras.optimizers.RMSprop()
+    dnn_opt = tf.keras.optimizers.Adam()
+
+    wide_deep_model.compile(
+        optimizer=[linear_opt, dnn_opt],
+        loss=tf.keras.losses.BinaryCrossentropy(),
+        metrics=['accuracy'])
+
+    return wide_deep_model
 
 def create_keras_model_sequential():
   feature_columns = create_feature_columns()
@@ -634,6 +708,7 @@ def train_and_evaluate_keras_model(model, model_dir):
   logging.info("done training keras model, evaluating model")
   loss, accuracy = model.evaluate(eval_ds, verbose=verbosity)
   logging.info("Eval - Loss: {}, Accuracy: {}".format(loss, accuracy))
+  logging.info(model.summary())
   logging.info("done evaluating keras model")
 
 def train_keras_model_to_estimator(strategy, model, model_dir):
@@ -695,13 +770,24 @@ def train_estimator_wide_and_deep(strategy, model_dir):
   config = tf.estimator.RunConfig(
           train_distribute=strategy,
           eval_distribute=strategy)
-  linear_feature_columns=create_linear_feature_columns()
-  categorical_feature_columns=create_categorical_feature_columns()
+
+  linear_feature_columns = create_linear_feature_columns()
+  corpus_dict = get_corpus_dict()
+  categorical_feature_columns_and_embeddings = create_categorical_embeddings_feature_columns(corpus_dict)
+  categorical_feature_columns = list(tf.feature_column.indicator_column(embedding.categorical_column) for embedding in categorical_feature_columns_and_embeddings)
+  embeddings = list(embedding for embedding in categorical_feature_columns_and_embeddings)
+
+  crossed_columns = list(tf.feature_column.indicator_column(tf.feature_column.crossed_column(
+    keys,
+    min(max(len(corpus_dict[keys[0]]), len(corpus_dict[keys[1]])), 100000))) for keys in KEY_CROSSES)
+
+  deep_model_feature_columns = embeddings + linear_feature_columns
+  wide_model_feature_columns = categorical_feature_columns + crossed_columns
   estimator = tf.estimator.DNNLinearCombinedClassifier(
       dnn_optimizer=tf.optimizers.SGD(learning_rate=0.05),
       linear_optimizer=tf.optimizers.SGD(learning_rate=0.05),
-      linear_feature_columns=linear_feature_columns,
-      dnn_feature_columns=linear_feature_columns + categorical_feature_columns,
+      linear_feature_columns=wide_model_feature_columns,
+      dnn_feature_columns=deep_model_feature_columns,
       dnn_hidden_units=[2560, 1024, 256],
       model_dir=model_dir,
       config=config,
@@ -950,6 +1036,9 @@ def main():
     if TRAIN_LOCATION != TRAIN_LOCATION_TYPE.local:
       logging_client = google.cloud.logging.Client()
       logging_client.setup_logging()
+    else:
+      # disable MKL if run locally, see https://b.corp.google.com/issues/149489290
+      os.environ['TF_DISABLE_MKL'] = '1'
 
     logging.getLogger().setLevel(logging.INFO)
     logging.info('>>>>>>>>>>>>>>>>>>> trainer started <<<<<<<<<<<<<<<<<<<<<<<')
