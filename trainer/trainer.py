@@ -38,22 +38,49 @@ import google.cloud.logging
 
 import argparse
 
+from tensorboardX import SummaryWriter
+
 class BatchAccuracyAndLossSummaryCallback(tf.keras.callbacks.Callback):
   # TODO: make it dist. strat. compartible
-  def __init__(self, dataset_size):
+  def __init__(self, log_dir, dataset_size):
     # Callback should only write summaries on the chief when in a Multi-Worker setting.
     self._chief_worker_only = True
-    self.update_freq = 50 if dataset_size == 'small' else 1000
+    self.update_freq = 10 if dataset_size == DATASET_SIZE_TYPE.small else 500
+    #file_writer = tf.summary.create_file_writer(log_dir + "/metrics")
+    #file_writer.set_as_default()
+    self.writer = SummaryWriter(log_dir +'/scalar_metrics')
+
   def on_epoch_begin(self, epoch, logs=None):
     self.epoch = epoch
+  def on_epoch_end(self, epoch, logs=None):
+      if 'accuracy' in logs:
+        self.writer.add_scalars('accuracy', {'train':logs['accuracy']}, epoch)
+      if 'val_accuracy' in logs:
+        self.writer.add_scalars('accuracy', {'validation':logs['val_accuracy']}, epoch)
+      if 'loss' in logs:
+        self.writer.add_scalars('loss', {'train':logs['loss']}, epoch)
+      if 'val_loss' in logs:
+        self.writer.add_scalars('loss', {'validation':logs['val_loss']}, epoch)
+
   def on_train_batch_end(self, batch, logs=None):
     if batch % self.update_freq == 0:
       if 'accuracy' in logs:
-        tf.summary.scalar('accuracy', logs['accuracy'], batch, description='epoch: {}'.format(self.epoch))
-        tf.summary.scalar('accuracy epoch: {}'.format(self.epoch), logs['accuracy'], batch, description='epoch: {}'.format(self.epoch))
+        self.writer.add_scalar('accuracy/train_epoch_{}'.format(self.epoch), logs['accuracy'], batch)
+        self.writer.add_scalars('accuracy/combined', {'train_epoch_{}'.format(self.epoch):logs['accuracy']}, batch)
       if 'loss' in logs:
-        tf.summary.scalar('loss', logs['loss'], batch, description='epoch: {}'.format(self.epoch))
-        tf.summary.scalar('loss epoch: {}'.format(self.epoch), logs['loss'], batch, description='epoch: {}'.format(self.epoch))
+        self.writer.add_scalar('loss/train_epoch_{}'.format(self.epoch), logs['loss'], batch)
+        self.writer.add_scalars('loss/combined', {'train_epoch_{}'.format(self.epoch):logs['loss']}, batch)
+  def on_test_batch_end(self, batch, logs=None):
+    if batch % self.update_freq // 10 == 0:
+      if 'accuracy' in logs:
+        self.writer.add_scalar('accuracy/test_epoch_{}'.format(self.epoch), logs['accuracy'], batch)
+        self.writer.add_scalars('accuracy/combined', {'test_epoch_{}'.format(self.epoch):logs['accuracy']}, batch)
+      if 'loss' in logs:
+        self.writer.add_scalar('loss/test_epoch_{}'.format(self.epoch), logs['loss'], batch)
+        self.writer.add_scalars('loss/combined', {'test_epoch_{}'.format(self.epoch):logs['loss']}, batch)
+  def on_train_end(self, logs=None):
+    self.writer.close()
+
 
 class TrainTimeCallback(tf.keras.callbacks.Callback):
   def on_epoch_begin(self, epoch, logs=None):
@@ -101,7 +128,8 @@ DISTRIBUTION_STRATEGY_TYPE_VALUES = 'tf.distribute.MirroredStrategy tf.distribut
   'tf.distribute.experimental.TPUStrategy tf.distribute.OneDeviceStrategy'
 TRAINING_FUNCTION_VALUES = 'train_keras_sequential train_keras_functional train_keras_functional_wide_and_deep ' \
   'train_keras_to_estimator_functional train_keras_to_estimator_sequential train_estimator train_estimator_wide_and_deep ' \
-  'train_keras_functional_no_feature_layer train_custom_loop_keras_sequential train_custom_loop_keras_model_functional_no_feature_layer'
+  'train_keras_functional_no_feature_layer train_custom_loop_keras_sequential train_custom_loop_keras_model_functional_no_feature_layer ' \
+  'train_keras_sequential_wide_and_deep'
 
 DATASET_SIZE_TYPE = Enum('DATASET_SIZE_TYPE', 'full small')
 DATASET_SIZE = DATASET_SIZE_TYPE.small
@@ -587,7 +615,7 @@ def create_keras_model_functional_wide_and_deep_dontuse():
     logging.info("model: " + str(model.summary()))
     return model
 
-def create_keras_model_functional_wide_and_deep():
+def create_keras_model_sequential_wide_and_deep():
     if EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.none:
       raise ValueError('embeddings are required for wide and deep model')
 
@@ -604,12 +632,17 @@ def create_keras_model_functional_wide_and_deep():
     deep_model_feature_columns = embeddings + linear_feature_columns
     dense_feature_layer = tf.keras.layers.DenseFeatures(deep_model_feature_columns)
     Dense = tf.keras.layers.Dense
+    Dropout = tf.keras.layers.Dropout
+    BatchNormalization = tf.keras.layers.BatchNormalization
     dense_model = tf.keras.Sequential(
     [
         dense_feature_layer,
         Dense(2560, activation=tf.nn.relu),
+        BatchNormalization(),
         Dense(1024, activation=tf.nn.relu),
+        BatchNormalization(),
         Dense(256, activation=tf.nn.relu),
+        BatchNormalization(),
         Dense(1, activation=tf.nn.sigmoid)
     ])
 
@@ -621,13 +654,16 @@ def create_keras_model_functional_wide_and_deep():
     linear_model = tf.keras.Sequential(
     [
       sparse_feature_layer,
+      Dropout(0.4),
       Dense(1, activation=tf.nn.sigmoid)
     ])
 
     wide_deep_model = tf.keras.experimental.WideDeepModel(linear_model, dense_model)
     #wide_deep_model(deep_model_feature_columns) # todo change
-    linear_opt = tf.keras.optimizers.RMSprop()
+    linear_opt = tf.keras.optimizers.Ftrl()
     dnn_opt = tf.keras.optimizers.Adam()
+    # linear_opt = tf.optimizers.SGD(learning_rate=0.05)
+    # dnn_opt = tf.optimizers.SGD(learning_rate=0.05)
 
     wide_deep_model.compile(
         optimizer=[linear_opt, dnn_opt],
@@ -641,12 +677,18 @@ def create_keras_model_sequential():
 
   feature_layer = tf.keras.layers.DenseFeatures(feature_columns, name="feature_layer")
   Dense = tf.keras.layers.Dense
+  Dropout = tf.keras.layers.Dropout
+  BatchNormalization = tf.keras.layers.BatchNormalization
   model = tf.keras.Sequential(
   [
       feature_layer,
-      Dense(2560, activation=tf.nn.relu),
+      #BatchNormalization(),
+      #Dense(2560, activation=tf.nn.relu),
+      Dropout(0.3),
       Dense(1024, activation=tf.nn.relu),
+      Dropout(0.2),
       Dense(256, activation=tf.nn.relu),
+      Dropout(0.1),
       Dense(1, activation=tf.nn.sigmoid)
   ])
 
@@ -656,6 +698,7 @@ def create_keras_model_sequential():
       # cannot use Adagrad with mirroredstartegy https://github.com/tensorflow/tensorflow/issues/19551
       #optimizer=tf.optimizers.Adagrad(learning_rate=0.05),
       optimizer=tf.optimizers.SGD(learning_rate=0.05),
+      #optimizer=tf.optimizers.Adam(),
       loss=tf.keras.losses.BinaryCrossentropy(),
       metrics=['accuracy'])
   return model
@@ -680,6 +723,7 @@ def train_and_evaluate_keras_model(model, model_dir):
 
   callbacks=[]
   train_time_callback = TrainTimeCallback()
+  batch_summary_callback = BatchAccuracyAndLossSummaryCallback(log_dir, DATASET_SIZE)
 
   if DISTRIBUTION_STRATEGY_TYPE == 'tf.distribute.experimental.TPUStrategy':
     # epoch and accuracy constants are not supported when training on TPU.
@@ -695,21 +739,19 @@ def train_and_evaluate_keras_model(model, model_dir):
     else:
       checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
     checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoints_file_path, verbose=1, mode='max')
-    file_writer = tf.summary.create_file_writer(log_dir + "/metrics")
-    file_writer.set_as_default()
-    batch_summary_callback = BatchAccuracyAndLossSummaryCallback(DATASET_SIZE)
     callbacks=[tensorboard_callback, checkpoint_callback, batch_summary_callback, train_time_callback]
     #callbacks=[tensorboard_callback, checkpoint_callback, train_time_callback]
 
   verbosity = 1 if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.local else 2
-  logging.info('training keras model')
-  model.fit(training_ds, epochs=EPOCHS, verbose=verbosity, callbacks=callbacks)
   eval_ds = get_dataset('test')
+  logging.info('training keras model')
+  model.fit(training_ds, epochs=EPOCHS, verbose=verbosity, callbacks=callbacks, validation_data=eval_ds)
   logging.info("done training keras model, evaluating model")
-  loss, accuracy = model.evaluate(eval_ds, verbose=verbosity)
+  loss, accuracy = model.evaluate(eval_ds, verbose=verbosity, callbacks=[tensorboard_callback, batch_summary_callback])
   logging.info("Eval - Loss: {}, Accuracy: {}".format(loss, accuracy))
   logging.info(model.summary())
   logging.info("done evaluating keras model")
+  return {'accuracy': accuracy, 'loss': loss}
 
 def train_keras_model_to_estimator(strategy, model, model_dir):
     logging.info('training for {} steps'.format(get_max_steps()))
@@ -720,28 +762,32 @@ def train_keras_model_to_estimator(strategy, model, model_dir):
         keras_model=model, model_dir=model_dir, config=config)
     # Need to specify both max_steps and epochs. Each worker will go through epoch separately.
     # see https://www.tensorflow.org/api_docs/python/tf/estimator/train_and_evaluate?version=stable
-    tf.estimator.train_and_evaluate(
+    result = tf.estimator.train_and_evaluate(
         keras_estimator,
         train_spec=tf.estimator.TrainSpec(input_fn=lambda: get_dataset('train').repeat(EPOCHS), max_steps=get_max_steps()),
         eval_spec=tf.estimator.EvalSpec(input_fn=lambda: get_dataset('test')))
+    return result
 
 def train_keras_sequential(strategy, model_dir):
-  train_and_evaluate_keras_model(create_keras_model_sequential(), model_dir)
+  return train_and_evaluate_keras_model(create_keras_model_sequential(), model_dir)
 
 def train_keras_functional(strategy, model_dir):
-  train_and_evaluate_keras_model(create_keras_model_functional(), model_dir)
+  return train_and_evaluate_keras_model(create_keras_model_functional(), model_dir)
 
 def train_keras_functional_no_feature_layer(strategy, model_dir):
-  train_and_evaluate_keras_model(create_keras_model_functional_no_feature_layer(), model_dir)
+  return train_and_evaluate_keras_model(create_keras_model_functional_no_feature_layer(), model_dir)
 
 def train_keras_functional_wide_and_deep(strategy, model_dir):
-  train_and_evaluate_keras_model(create_keras_model_functional_wide_and_deep(), model_dir)
+  return train_and_evaluate_keras_model(create_keras_model_functional_wide_and_deep(), model_dir)
+
+def train_keras_sequential_wide_and_deep(strategy, model_dir):
+  return train_and_evaluate_keras_model(create_keras_model_sequential_wide_and_deep(), model_dir)
 
 def train_keras_to_estimator_sequential(strategy, model_dir):
-  train_keras_model_to_estimator(strategy, create_keras_model_sequential(), model_dir)
+  return train_keras_model_to_estimator(strategy, create_keras_model_sequential(), model_dir)
 
 def train_keras_to_estimator_functional(strategy, model_dir):
-  train_keras_model_to_estimator(strategy, create_keras_model_functional(), model_dir)
+  return train_keras_model_to_estimator(strategy, create_keras_model_functional(), model_dir)
 
 def train_estimator(strategy, model_dir):
   logging.info('training for {} steps'.format(get_max_steps()))
@@ -813,8 +859,6 @@ def train_custom_loop(strategy, model, model_dir):
   log_dir= os.path.join(model_dir, "logs")
   if not os.path.exists(log_dir):
         os.makedirs(log_dir)
-  file_writer = tf.summary.create_file_writer(log_dir + "/metrics")
-  file_writer.set_as_default()
   # This is fine for MirroredStrategy and TPUStrategy, but has to be changed to run on chief only
   # once multi-node training is supported (ParameterServer, MultiWorkerMirroredStrategy).
   batch_summary_callback = BatchAccuracyAndLossSummaryCallback(DATASET_SIZE)
@@ -1036,9 +1080,6 @@ def main():
     if TRAIN_LOCATION != TRAIN_LOCATION_TYPE.local:
       logging_client = google.cloud.logging.Client()
       logging_client.setup_logging()
-    else:
-      # disable MKL if run locally, see https://b.corp.google.com/issues/149489290
-      os.environ['TF_DISABLE_MKL'] = '1'
 
     logging.getLogger().setLevel(logging.INFO)
     logging.info('>>>>>>>>>>>>>>>>>>> trainer started <<<<<<<<<<<<<<<<<<<<<<<')

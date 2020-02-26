@@ -15,6 +15,7 @@ if [ "$AI_PLATFROM_MODE" = "docker" ] ; then
 
     echo "Running training job in docker image..."
     # Install NVIDIA driver and https://github.com/NVIDIA/nvidia-docker in order to be able to train models on GPU.
+    # disable MKL if run locally, see https://b.corp.google.com/issues/149489290
     echo "docker run --gpus all -v ${PWD}/${MODEL_DIR}:/${MODEL_DIR} $IMAGE_URI python trainer/trainer.py --job-dir=/${MODEL_DIR} $@"
     docker run --gpus all -v ${PWD}/${MODEL_DIR}:/${MODEL_DIR} $IMAGE_URI python trainer/trainer.py --job-dir=/${MODEL_DIR} $@
     #docker run --gpus all -it -v ${PWD}:/host $IMAGE_URI python trainer/trainer.py --job-dir=/root/model $@
