@@ -39,6 +39,7 @@ RUN pip list
 #RUN pip install tf-nightly-gpu
 #RUN pip install tensorflow-gpu==2.1.0
 RUN pip install tf-nightly-gpu==2.2.0.dev20200227
+#RUN pip install tf-nightly-gpu==2.2.0.dev20200201
 #RUN pip install tf-nightly-gpu
 #RUN pip install tensorflow==2.1.0
 
@@ -46,6 +47,8 @@ RUN pip install tf-nightly-gpu==2.2.0.dev20200227
 #RUN pip install --no-deps tensorflow-io==0.11.0
 COPY dependencies/tensorflow_io-2.2.0.dev20200227-cp37-cp37m-manylinux2010_x86_64.whl /root/
 RUN pip install --no-deps /root/tensorflow_io-2.2.0.dev20200227-cp37-cp37m-manylinux2010_x86_64.whl
+#COPY dependencies/tensorflow_io-0.15.0-cp37-cp37m-manylinux2010_x86_64.whl /root/
+#RUN pip install --no-deps /root/tensorflow_io-0.15.0-cp37-cp37m-manylinux2010_x86_64.whl
 
 RUN pip install google-cloud-bigquery
 RUN pip install google-cloud-bigquery-storage
