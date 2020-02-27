@@ -10,7 +10,8 @@ export DOCKER_GPU_BASE_IMAGE=gcr.io/deeplearning-platform-release/tf2-gpu.2-1
 
 #export IMAGE_TAG=tf21_gpu_tfofficial
 #export IMAGE_TAG=tf21_gpu_cuda
-export IMAGE_TAG=tfent21_gpu
+#export IMAGE_TAG=tfent21_gpu
+export IMAGE_TAG=tfnightly22_gpu
 #export IMAGE_TAG=tf21_cpu_tfofficial
 export DOCKER_BASE_IMAGE=${DOCKER_GPU_BASE_IMAGE}
 export FLAVOR='GPU'
@@ -41,7 +42,8 @@ case $i in
     ;;
     --no-gpu)
     export DOCKER_BASE_IMAGE=${DOCKER_CPU_BASE_IMAGE}
-    export IMAGE_TAG=tfent21_cpu
+    #export IMAGE_TAG=tfent21_cpu
+    export IMAGE_TAG=tfnightly22_cpu
     export FLAVOR='CPU'
     ;;
     --ai-platform-mode=*)
