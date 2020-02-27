@@ -514,7 +514,7 @@ def create_input_layer():
        feature_column.name: tf.keras.layers.Input(name=feature_column.name, shape=(1,), dtype=tf.float32)
        for feature_column in numeric_feature_columns
     }
-    categorical_feature_columns = create_categorical_embeddings_feature_columns()
+    categorical_feature_columns = create_categorical_embeddings_feature_columns(get_corpus_dict())
     categorical_input_layers = {
        feature_column.categorical_column.name: tf.keras.layers.Input(name=feature_column.categorical_column.name, shape=(), dtype=tf.string)
        for feature_column in categorical_feature_columns
@@ -589,7 +589,7 @@ def create_keras_model_functional_no_feature_layer():
 
 def create_keras_model_functional_wide_and_deep_dontuse():
     (feature_layer_inputs, feature_columns) = create_input_layer()
-    categorical_feature_columns=create_categorical_embeddings_feature_columns()
+    categorical_feature_columns=create_categorical_embeddings_feature_columns(get_corpus_dict())
 
     wide = tf.keras.layers.DenseFeatures(categorical_feature_columns)(feature_layer_inputs)
 
@@ -745,7 +745,8 @@ def train_and_evaluate_keras_model(model, model_dir):
   verbosity = 1 if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.local else 2
   eval_ds = get_dataset('test')
   logging.info('training keras model')
-  model.fit(training_ds, epochs=EPOCHS, verbose=verbosity, callbacks=callbacks, validation_data=eval_ds)
+  #model.fit(training_ds, epochs=EPOCHS, verbose=verbosity, callbacks=callbacks, validation_data=eval_ds)
+  model.fit(training_ds, epochs=EPOCHS, verbose=verbosity, callbacks=callbacks)
   logging.info("done training keras model, evaluating model")
   loss, accuracy = model.evaluate(eval_ds, verbose=verbosity, callbacks=[tensorboard_callback, batch_summary_callback])
   logging.info("Eval - Loss: {}, Accuracy: {}".format(loss, accuracy))
