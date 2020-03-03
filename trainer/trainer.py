@@ -48,6 +48,7 @@ class BatchAccuracyAndLossSummaryCallback(tf.keras.callbacks.Callback):
     self.update_freq = 10 if dataset_size == DATASET_SIZE_TYPE.small else 500
     #file_writer = tf.summary.create_file_writer(log_dir + "/metrics")
     #file_writer.set_as_default()
+    self.epoch = 0
     self.writer = SummaryWriter(log_dir +'/scalar_metrics')
 
   def on_epoch_begin(self, epoch, logs=None):
@@ -89,11 +90,11 @@ class TrainTimeCallback(tf.keras.callbacks.Callback):
   def on_epoch_end(self, epoch, logs=None):
     logging.info('\nepoch train time: (hh:mm:ss.ms) {}'.format(datetime.datetime.now() - self.epoch_start_time))
     if not self.params is None:
-      if 'steps' in self.params:
+      if 'steps' in self.params and self.params['steps']:
         epoch_milliseconds = (datetime.datetime.now() - self.epoch_start_time).total_seconds() * 1000
         logging.info('{} ms/step'.format(epoch_milliseconds / self.params['steps']))
-      if BATCH_SIZE is not None:
-        logging.info('{} microseconds/example'.format(1000 * epoch_milliseconds  / self.params['steps'] / BATCH_SIZE))
+        if BATCH_SIZE is not None:
+          logging.info('{} microseconds/example'.format(1000 * epoch_milliseconds  / self.params['steps'] / BATCH_SIZE))
 
   def on_train_begin(self, logs=None):
     self.start_training_time = datetime.datetime.now()
@@ -129,7 +130,7 @@ DISTRIBUTION_STRATEGY_TYPE_VALUES = 'tf.distribute.MirroredStrategy tf.distribut
 TRAINING_FUNCTION_VALUES = 'train_keras_sequential train_keras_functional train_keras_functional_wide_and_deep ' \
   'train_keras_to_estimator_functional train_keras_to_estimator_sequential train_estimator train_estimator_wide_and_deep ' \
   'train_keras_functional_no_feature_layer train_custom_loop_keras_sequential train_custom_loop_keras_model_functional_no_feature_layer ' \
-  'train_keras_sequential_wide_and_deep'
+  'train_keras_sequential_wide_and_deep train_keras_linear'
 
 DATASET_SIZE_TYPE = Enum('DATASET_SIZE_TYPE', 'full small')
 DATASET_SIZE = DATASET_SIZE_TYPE.small
@@ -199,6 +200,16 @@ KEY_CROSSES = [
   ['cat1', 'cat11'],
   ['cat8', 'cat13']
 ]
+
+# KEY_CROSSES = [[27, 31], [33, 37], [27, 29], [4, 6], [19, 36], [19, 22],
+#                   [19, 33], [6, 9], [10, 5], [19, 35, 36], [30, 36], [30, 11],
+#                   [20, 30], [19, 22, 28], [27, 31, 39], [1, 8], [11, 5],
+#                   [11, 7], [25, 2], [26, 27, 31], [38, 5], [19, 22, 11],
+#                   [37, 5], [24, 11], [13, 4], [19, 8], [27, 31, 33],
+#                   [17, 19, 36], [31, 3], [26, 5], [30, 12], [27, 31, 2],
+#                   [11, 9], [15, 34], [19, 26, 36], [27, 36], [30, 5], [23, 37],
+#                   [13, 3], [31, 6], [26, 8], [30, 33], [27, 36, 37], [1, 6],
+#                   [17, 30], [20, 23], [27, 31, 35], [26, 1], [26, 27, 36]]
 
 def get_mean_and_std_dicts():
   table_name = 'days' if DATASET_SIZE == DATASET_SIZE_TYPE.full else 'small'
@@ -524,13 +535,6 @@ def create_input_layer():
 
     return (input_layers, numeric_feature_columns + categorical_feature_columns)
 
-def create_embedding_from_input(corpus_dict, name, input_layer):
-  size = len(corpus_dict[name]) + 2
-  dimension =  int(min(50, math.floor(6 * size**0.25)))
-  logging.info('embedding name:{} size:{} dim:{}'.format(name, size, dimension))
-  embedding = tf.keras.layers.Embedding(size, dimension, name = name + '_embedding', input_length=1)(input_layer)
-  return embedding
-
 def create_keras_model_functional():
     (feature_layer_inputs, feature_columns) = create_input_layer()
     feature_layer = tf.keras.layers.DenseFeatures(feature_columns)
@@ -552,6 +556,13 @@ def create_keras_model_functional():
       metrics=['accuracy'])
     logging.info("model: " + str(model.summary()))
     return model
+
+def create_embedding_from_input(corpus_dict, name, input_layer):
+  size = len(corpus_dict[name]) + 2
+  dimension =  int(min(50, math.floor(6 * size**0.25)))
+  logging.info('embedding name:{} size:{} dim:{}'.format(name, size, dimension))
+  embedding = tf.keras.layers.Embedding(size, dimension, name = name + '_embedding', input_length=1)(input_layer)
+  return embedding
 
 def create_keras_model_functional_no_feature_layer():
   corpus_dict = get_corpus_dict()
@@ -614,6 +625,80 @@ def create_keras_model_functional_wide_and_deep_dontuse():
       metrics=['accuracy'])
     logging.info("model: " + str(model.summary()))
     return model
+
+def create_category_crossings_layers(corpus_dict, categorical_input_with_names_dict):
+  crossing_layers = []
+  for cross_keys in KEY_CROSSES:
+    max_key_bucket_size = 0
+    cross_inputs = []
+    for key in cross_keys:
+      max_key_bucket_size = max(max_key_bucket_size, len(corpus_dict[key]))
+      cross_inputs.append(categorical_input_with_names_dict[key])
+    cross_bucket_size = min(max_key_bucket_size * 2, 100000)
+    crossing_layer = CategoryCrossing(cross_bucket_size)(cross_inputs)
+    crossing_layers.append(crossing_layer)
+  return crossing_layers
+
+def create_keras_model_linear_with_crosses():
+  def create_category_crossed_features(corpus_dict, categorical_features_with_names_dict):
+    crossed_features = []
+    for cross_keys in KEY_CROSSES:
+      max_key_bucket_size = 0
+      features_to_cross = []
+      for key in cross_keys:
+        max_key_bucket_size = max(max_key_bucket_size, len(corpus_dict[key]))
+        features_to_cross.append(categorical_features_with_names_dict[key])
+      cross_bucket_size = min(max_key_bucket_size * 2, 100000)
+      crossed_feature = tf.feature_column.crossed_column(features_to_cross, hash_bucket_size=cross_bucket_size)
+      crossed_features.append(crossed_feature)
+    return crossed_features
+
+  inputs_dict = dict()
+  categorical_inputs_dict = dict()
+  categorical_feature_columns = []
+  categorical_feature_columns_dict = dict()
+  numerical_inputs_dict = dict()
+  numerical_feature_columns = []
+  corpus_dict = get_corpus_dict()
+
+  for field in CSV_SCHEMA:
+    key = field.name
+    if field.field_type == 'STRING' and field.name != 'label':
+      categorical_feature_column = create_categorical_feature_column_with_vocabulary_list(corpus_dict, key)
+      categorical_feature_columns.append(categorical_feature_column)
+      categorical_feature_columns_dict[key] = categorical_feature_column
+      categorical_input = tf.keras.layers.Input(name=key, shape=(), dtype=tf.string)
+      categorical_inputs_dict[key] = categorical_input
+      inputs_dict[key] = categorical_input
+    if field.field_type == 'INTEGER' and field.name != 'label':
+      numerical_feature_column = tf.feature_column.numeric_column(key, dtype=tf.dtypes.float32)
+      numerical_feature_columns.append(numerical_feature_column)
+      numerical_input = tf.keras.layers.Input(name=key, shape=(), dtype=tf.float32)
+      numerical_inputs_dict[key] = numerical_input
+      #inputs_dict[key] = numerical_input
+
+  crossed_features = create_category_crossed_features(corpus_dict, categorical_feature_columns_dict)
+  numeric_feature_columns = create_linear_feature_columns()
+
+  #sparse_features = categorical_feature_columns + crossed_features
+  sparse_features = categorical_feature_columns
+
+  sparse_features_densified = list(tf.feature_column.indicator_column(sparse_feature) for sparse_feature in sparse_features) # this is very inefficient as indicator_column creates a dense tensor from a sparse one
+  #x = tf.keras.layers.DenseFeatures(sparse_features_densified + numerical_feature_columns)(inputs_dict) # there is no alternative to DenseFeatures
+  x = tf.keras.layers.DenseFeatures(sparse_features_densified)(inputs_dict) # there is no alternative to DenseFeatures
+  outputs = tf.keras.experimental.LinearModel(units=1)(x)
+  model = tf.keras.Model(inputs=inputs_dict.values(), outputs=outputs)
+
+  # Compile Keras model
+  model.compile(
+    # cannot use Adagrad with mirroredstartegy https://github.com/tensorflow/tensorflow/issues/19551
+    optimizer=tf.optimizers.SGD(learning_rate=0.05),
+    #optimizer=tf.optimizers.Adam(),
+    #optimizer=tf.optimizers.Adagrad(),
+    loss=tf.keras.losses.BinaryCrossentropy(),
+    metrics=['accuracy'])
+  logging.info("model: " + str(model.summary()))
+  return model
 
 def create_keras_model_sequential_wide_and_deep():
     if EMBEDDINGS_MODE == EMBEDDINGS_MODE_TYPE.none:
@@ -704,6 +789,7 @@ def create_keras_model_sequential():
   return model
 
 def train_and_evaluate_keras_model(model, model_dir):
+#  tf.debugging.experimental.enable_dump_debug_info(model_dir)
   dataset_size = FULL_TRAIN_DATASET_SIZE if DATASET_SIZE == DATASET_SIZE_TYPE.full else SMALL_TRAIN_DATASET_SIZE
   logging.info('training datset size: {}'.format(dataset_size))
   training_ds = get_dataset('train')
@@ -745,8 +831,8 @@ def train_and_evaluate_keras_model(model, model_dir):
   verbosity = 1 if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.local else 2
   eval_ds = get_dataset('test')
   logging.info('training keras model')
-  #model.fit(training_ds, epochs=EPOCHS, verbose=verbosity, callbacks=callbacks, validation_data=eval_ds)
-  model.fit(training_ds, epochs=EPOCHS, verbose=verbosity, callbacks=callbacks)
+  model.fit(training_ds, epochs=EPOCHS, verbose=verbosity, callbacks=callbacks, validation_data=eval_ds)
+  #model.fit(training_ds, epochs=EPOCHS, verbose=verbosity, callbacks=callbacks)
   logging.info("done training keras model, evaluating model")
   loss, accuracy = model.evaluate(eval_ds, verbose=verbosity, callbacks=[tensorboard_callback, batch_summary_callback])
   logging.info("Eval - Loss: {}, Accuracy: {}".format(loss, accuracy))
@@ -768,6 +854,9 @@ def train_keras_model_to_estimator(strategy, model, model_dir):
         train_spec=tf.estimator.TrainSpec(input_fn=lambda: get_dataset('train').repeat(EPOCHS), max_steps=get_max_steps()),
         eval_spec=tf.estimator.EvalSpec(input_fn=lambda: get_dataset('test')))
     return result
+
+def train_keras_linear(strategy, model_dir):
+  return train_and_evaluate_keras_model(create_keras_model_linear_with_crosses(), model_dir)
 
 def train_keras_sequential(strategy, model_dir):
   return train_and_evaluate_keras_model(create_keras_model_sequential(), model_dir)
