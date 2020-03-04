@@ -89,6 +89,8 @@ EMBEDDINGS_MODE = EMBEDDINGS_MODE_TYPE.hashbucket
 
 FULL_TRAIN_DATASET_SIZE = 36670642 # select count(1) from `alekseyv-scalableai-dev.criteo_kaggle.train`
 SMALL_TRAIN_DATASET_SIZE = 366715  # select count(1) from `alekseyv-scalableai-dev.criteo_kaggle.train_small`
+FULL_TEST_DATASET_SIZE = 36670642 # select count(1) from `alekseyv-scalableai-dev.criteo_kaggle.train`
+SMALL_TEST_DATASET_SIZE = 366715  # select count(1) from `alekseyv-scalableai-dev.criteo_kaggle.train_small`
 
 TRAIN_LOCATION_TYPE_VALUES = 'local cloud'
 TRAIN_LOCATION_TYPE = Enum('TRAIN_LOCATION_TYPE', TRAIN_LOCATION_TYPE_VALUES)
@@ -357,10 +359,10 @@ def read_bigquery(table_name):
   # Interleave dataset is not shardable, turning off sharding
   # See https://www.tensorflow.org/tutorials/distribute/multi_worker_with_keras#dataset_sharding_and_batch_size
   # Instead we are shuffling data.
-  # options = tf.data.Options()
-  #  options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.OFF
-  # return transformed_ds.with_options(options)
-  return transformed_ds
+  #return transformed_ds
+  options = tf.data.Options()
+  options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.OFF
+  return transformed_ds.with_options(options)
 
 def transofrom_row_gcs(row_tuple, mean_dict, std_dict, corpus):
     row_dict = dict(zip(list(field.name for field in CSV_SCHEMA) + ['row_hash'], list(row_tuple)))
@@ -413,9 +415,19 @@ def get_dataset(table_name):
   global DATASET_SOURCE
   return read_gcs(table_name) if DATASET_SOURCE == DATASET_SOURCE_TYPE.gcs else read_bigquery(table_name)
 
-def get_max_steps():
+def get_training_steps_per_epoch():
+  global DATASET_SOURCE
   dataset_size = FULL_TRAIN_DATASET_SIZE if DATASET_SIZE == DATASET_SIZE_TYPE.full else SMALL_TRAIN_DATASET_SIZE
-  return EPOCHS * dataset_size // BATCH_SIZE
+  return dataset_size // BATCH_SIZE
+
+def get_validation_steps_per_epoch():
+  global DATASET_SOURCE
+  dataset_size = FULL_TEST_DATASET_SIZE if DATASET_SIZE == DATASET_SIZE_TYPE.full else SMALL_TEST_DATASET_SIZE
+  return dataset_size // BATCH_SIZE
+
+def get_max_steps():
+  global EPOCHS
+  return EPOCHS * get_steps_per_epoch()
 
 def create_categorical_feature_column_with_hash_bucket(corpus_dict, key):
   corpus_size = len(corpus_dict[key])
@@ -481,12 +493,13 @@ def create_feature_columns():
   return feature_columns
 
 def create_input_layer():
+    corpus_dict = get_corpus_dict()
     numeric_feature_columns = create_linear_feature_columns()
     numerical_input_layers = {
        feature_column.name: tf.keras.layers.Input(name=feature_column.name, shape=(1,), dtype=tf.float32)
        for feature_column in numeric_feature_columns
     }
-    categorical_feature_columns = create_categorical_embeddings_feature_columns()
+    categorical_feature_columns = create_categorical_embeddings_feature_columns(corpus_dict)
     categorical_input_layers = {
        feature_column.categorical_column.name: tf.keras.layers.Input(name=feature_column.categorical_column.name, shape=(), dtype=tf.string)
        for feature_column in categorical_feature_columns
@@ -663,7 +676,6 @@ def create_keras_model_sequential():
 def train_and_evaluate_keras_model(model, model_dir):
   dataset_size = FULL_TRAIN_DATASET_SIZE if DATASET_SIZE == DATASET_SIZE_TYPE.full else SMALL_TRAIN_DATASET_SIZE
   logging.info('training datset size: {}'.format(dataset_size))
-  training_ds = get_dataset('train')
 
   #log_dir= os.path.join(model_dir, "logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
   log_dir= os.path.join(model_dir, "logs")
@@ -703,7 +715,19 @@ def train_and_evaluate_keras_model(model, model_dir):
 
   verbosity = 1 if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.local else 2
   logging.info('training keras model')
-  model.fit(training_ds, epochs=EPOCHS, verbose=verbosity, callbacks=callbacks)
+  # training_ds = get_dataset('train').repeat(EPOCHS)
+  # model.fit(training_ds, epochs=EPOCHS, verbose=verbosity, callbacks=callbacks, steps_per_epoch = get_steps_per_epoch())
+  training_ds = get_dataset('train').repeat(EPOCHS)
+  eval_ds = get_dataset('test').repeat(EPOCHS)
+  model.fit(
+    training_ds,
+    epochs=EPOCHS,
+    verbose=verbosity,
+    callbacks=callbacks,
+    steps_per_epoch=get_training_steps_per_epoch())
+    # validation_data=eval_ds,
+    # validation_steps=get_validation_steps_per_epoch())
+  #model.fit(training_ds, epochs=EPOCHS, verbose=verbosity, callbacks=callbacks)
   eval_ds = get_dataset('test')
   logging.info("done training keras model, evaluating model")
   loss, accuracy = model.evaluate(eval_ds, verbose=verbosity)

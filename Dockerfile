@@ -38,7 +38,8 @@ RUN pip list
 #RUN pip install tensorflow-gpu==2.0.0
 #RUN pip install tf-nightly-gpu
 #RUN pip install tensorflow-gpu==2.1.0
-RUN pip install tf-nightly-gpu==2.2.0.dev20200227
+RUN pip install tf-nightly-gpu==2.2.0.dev20200303
+#RUN pip install tf-nightly-gpu==2.2.0.dev20200227
 #RUN pip install tf-nightly-gpu==2.2.0.dev20200201
 #RUN pip install tf-nightly-gpu
 #RUN pip install tensorflow==2.1.0

@@ -51,7 +51,8 @@ if args.distribution_strategy == "tf.distribute.MirroredStrategy":
     num_gpus_per_worker=2
     num_workers=0 # chief only
 elif args.distribution_strategy == "tf.distribute.experimental.CentralStorageStrategy":
-    num_ps=1 # see https://b.corp.google.com/issues/148108526 why PS is necessary
+    #num_ps=1 # see https://b.corp.google.com/issues/148108526 why PS is necessary
+    num_ps=0 # see https://b.corp.google.com/issues/148108526 why PS is necessary
     num_workers=0
     num_gpus_per_worker=2
 elif args.distribution_strategy == "tf.distribute.experimental.ParameterServerStrategy":
