@@ -40,7 +40,7 @@ import argparse
 
 class BatchAccuracyAndLossSummaryCallback(tf.keras.callbacks.Callback):
   # TODO: make it dist. strat. compartible
-  def __init__(self, dataset_size):
+  def __init__(self, log_dir, dataset_size):
     # Callback should only write summaries on the chief when in a Multi-Worker setting.
     self._chief_worker_only = True
     self.update_freq = 50 if dataset_size == 'small' else 1000
@@ -89,8 +89,8 @@ EMBEDDINGS_MODE = EMBEDDINGS_MODE_TYPE.hashbucket
 
 FULL_TRAIN_DATASET_SIZE = 36670642 # select count(1) from `alekseyv-scalableai-dev.criteo_kaggle.train`
 SMALL_TRAIN_DATASET_SIZE = 366715  # select count(1) from `alekseyv-scalableai-dev.criteo_kaggle.train_small`
-FULL_TEST_DATASET_SIZE = 36670642 # select count(1) from `alekseyv-scalableai-dev.criteo_kaggle.train`
-SMALL_TEST_DATASET_SIZE = 366715  # select count(1) from `alekseyv-scalableai-dev.criteo_kaggle.train_small`
+FULL_TEST_DATASET_SIZE = 4589420 # select count(1) from `alekseyv-scalableai-dev.criteo_kaggle.train`
+SMALL_TEST_DATASET_SIZE = 50048  # select count(1) from `alekseyv-scalableai-dev.criteo_kaggle.train_small`
 
 TRAIN_LOCATION_TYPE_VALUES = 'local cloud'
 TRAIN_LOCATION_TYPE = Enum('TRAIN_LOCATION_TYPE', TRAIN_LOCATION_TYPE_VALUES)
@@ -574,7 +574,7 @@ def create_keras_model_functional_no_feature_layer():
 
 def create_keras_model_functional_wide_and_deep_dontuse():
     (feature_layer_inputs, feature_columns) = create_input_layer()
-    categorical_feature_columns=create_categorical_embeddings_feature_columns()
+    categorical_feature_columns=create_categorical_embeddings_feature_columns(get_corpus_dict())
 
     wide = tf.keras.layers.DenseFeatures(categorical_feature_columns)(feature_layer_inputs)
 
@@ -688,10 +688,11 @@ def train_and_evaluate_keras_model(model, model_dir):
   checkpoints_dir= os.path.join(model_dir, "checkpoints")
   # crashing https://github.com/tensorflow/tensorflow/issues/27688
   if not os.path.exists(checkpoints_dir):
-      os.makedirs(checkpoints_dir)
+    os.mkdir(checkpoints_dir)
 
   callbacks=[]
   train_time_callback = TrainTimeCallback()
+  batch_summary_callback = BatchAccuracyAndLossSummaryCallback(log_dir, DATASET_SIZE)
 
   if DISTRIBUTION_STRATEGY_TYPE == 'tf.distribute.experimental.TPUStrategy':
     # epoch and accuracy constants are not supported when training on TPU.
@@ -707,10 +708,8 @@ def train_and_evaluate_keras_model(model, model_dir):
     else:
       checkpoints_file_path = checkpoints_dir + "/epochs:{epoch:03d}-accuracy:{accuracy:.3f}.hdf5"
     checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(checkpoints_file_path, verbose=1, mode='max')
-    file_writer = tf.summary.create_file_writer(log_dir + "/metrics")
-    file_writer.set_as_default()
-    batch_summary_callback = BatchAccuracyAndLossSummaryCallback(DATASET_SIZE)
-    callbacks=[tensorboard_callback, checkpoint_callback, batch_summary_callback, train_time_callback]
+    callbacks=[tensorboard_callback, batch_summary_callback, train_time_callback]
+    #callbacks=[tensorboard_callback, checkpoint_callback, batch_summary_callback, train_time_callback]
     #callbacks=[tensorboard_callback, checkpoint_callback, train_time_callback]
 
   verbosity = 1 if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.local else 2
@@ -719,6 +718,7 @@ def train_and_evaluate_keras_model(model, model_dir):
   # model.fit(training_ds, epochs=EPOCHS, verbose=verbosity, callbacks=callbacks, steps_per_epoch = get_steps_per_epoch())
   training_ds = get_dataset('train').repeat(EPOCHS)
   eval_ds = get_dataset('test').repeat(EPOCHS)
+  # steps_per_epoch and validation_steps are required for MultiWorkerMirroredStrategy
   model.fit(
     training_ds,
     epochs=EPOCHS,
@@ -730,7 +730,7 @@ def train_and_evaluate_keras_model(model, model_dir):
   #model.fit(training_ds, epochs=EPOCHS, verbose=verbosity, callbacks=callbacks)
   eval_ds = get_dataset('test')
   logging.info("done training keras model, evaluating model")
-  loss, accuracy = model.evaluate(eval_ds, verbose=verbosity)
+  loss, accuracy = model.evaluate(eval_ds, verbose=verbosity, steps=get_validation_steps_per_epoch(), callbacks=[tensorboard_callback, batch_summary_callback])
   logging.info("Eval - Loss: {}, Accuracy: {}".format(loss, accuracy))
   logging.info(model.summary())
   logging.info("done evaluating keras model")
@@ -1125,6 +1125,11 @@ def main():
     #   model_dir = os.path.join(model_dir, os.environ.get('HOSTNAME'))
     # model_dir = os.path.join(model_dir, args.training_function, 'model.joblib')
     logging.info('Model will be saved to "%s..."', model_dir)
+    if not os.path.exists(model_dir):
+      os.makedirs(model_dir)
+    log_dir= os.path.join(model_dir, "logs")
+    file_writer = tf.summary.create_file_writer(log_dir + "/metrics")
+    file_writer.set_as_default()
 
     logging.info('training_function arg: ' + str(args.training_function))
     training_function = getattr(sys.modules[__name__], args.training_function)
