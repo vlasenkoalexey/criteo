@@ -837,8 +837,6 @@ def train_custom_loop(strategy, model, model_dir):
   log_dir= os.path.join(model_dir, "logs")
   if not os.path.exists(log_dir):
         os.makedirs(log_dir)
-  file_writer = tf.summary.create_file_writer(log_dir + "/metrics")
-  file_writer.set_as_default()
   # This is fine for MirroredStrategy and TPUStrategy, but has to be changed to run on chief only
   # once multi-node training is supported (ParameterServer, MultiWorkerMirroredStrategy).
   batch_summary_callback = BatchAccuracyAndLossSummaryCallback(DATASET_SIZE)
@@ -1124,6 +1122,7 @@ def main():
     # if TRAIN_LOCATION == TRAIN_LOCATION_TYPE.cloud and os.environ.get('HOSTNAME'):
     #   model_dir = os.path.join(model_dir, os.environ.get('HOSTNAME'))
     # model_dir = os.path.join(model_dir, args.training_function, 'model.joblib')
+
     logging.info('Model will be saved to "%s..."', model_dir)
     if not os.path.exists(model_dir):
       os.makedirs(model_dir)
