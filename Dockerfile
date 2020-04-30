@@ -12,7 +12,6 @@ RUN pip install google-cloud-bigquery-storage
 RUN pip install google-cloud-logging
 #RUN pip install intel-tensorflow==2.1.0
 
-
 ENV PROJECT_ID=alekseyv-scalableai-dev
 ENV GOOGLE_APPLICATION_CREDENTIALS=/root/alekseyv-scalableai-dev-077efe757ef6.json
 
@@ -28,7 +27,15 @@ ENV TF_DISABLE_MKL=1
 # TF built with avx512 optimization
 #COPY dependencies/tensorflow-2.1.0-cp37-cp37m-linux_x86_64.whl /root/
 #RUN pip install --upgrade /root/tensorflow-2.1.0-cp37-cp37m-linux_x86_64.whl
+# TF build with tfe suffix
+#COPY dependencies/tfe_suffix/tensorflow-2.1.0-cp37-cp37m-linux_x86_64.whl /root/
+#RUN pip install --upgrade /root/tensorflow-2.1.0-cp37-cp37m-linux_x86_64.whl
 RUN pip install tensorboardX
+RUN pip install tensorflow-addons
+
+#RUN apt-get update
+#RUN apt-get install -y --no-install-recommends google-perftools
+#ENV LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc.so.4
 
 # Copies the trainer code
 RUN mkdir /root/trainer

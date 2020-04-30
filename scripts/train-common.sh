@@ -54,8 +54,8 @@ export IMAGE_URI=gcr.io/$PROJECT_ID/$IMAGE_REPO_NAME:$IMAGE_TAG
 
 if [ "$TENSORBOARD" = true ] ; then
     trap "kill 0" SIGINT
-    echo "running tensorboard: tensorboard --logdir=${MODEL_DIR}/logs --port=0"
-    tensorboard --logdir=${MODEL_DIR}/logs --port=0 &
+    echo "running tensorboard: tensorboard --logdir=${MODEL_DIR}/logs --port=0 --reload_multifile=true"
+    tensorboard --logdir=${MODEL_DIR}/logs --port=0 --reload_multifile=true &
 fi
 
 # one time operations
